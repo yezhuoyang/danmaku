@@ -11,6 +11,9 @@ import {
   ZoomOut,
   Type,
   Square,
+  Bot,
+  PanelRightClose,
+  PanelRightOpen,
 } from "lucide-react";
 import { nanoid } from "nanoid";
 import {
@@ -19,6 +22,8 @@ import {
   Annotation,
   ANNOTATION_COLORS,
 } from "./annotations";
+import { AICompanionPanel } from "./ai";
+import { PaperContent } from "@/lib/ai-service";
 
 // Set up the worker
 pdfjs.GlobalWorkerOptions.workerSrc = `//unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
@@ -113,6 +118,7 @@ export function PdfAnnotationViewer({
   const [scale, setScale] = useState<number>(0.85);
   const [pdfLoading, setPdfLoading] = useState<boolean>(true);
   const [pageSize, setPageSize] = useState({ width: 0, height: 0 });
+  const [pageText, setPageText] = useState<string>("");
 
   // Annotation state
   const [annotations, setAnnotations] = useState<Annotation[]>(initialAnnotations);
@@ -126,6 +132,10 @@ export function PdfAnnotationViewer({
     height: number;
     selectedText?: string;
   } | null>(null);
+
+  // AI Panel state
+  const [showAIPanel, setShowAIPanel] = useState(false);
+  const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
 
   // Selection state for drawing
   const [isDrawing, setIsDrawing] = useState(false);
@@ -148,6 +158,26 @@ export function PdfAnnotationViewer({
     },
     []
   );
+
+  // Extract text from the current page for AI analysis
+  useEffect(() => {
+    const extractText = async () => {
+      try {
+        const loadingTask = pdfjs.getDocument(pdfUrl);
+        const pdf = await loadingTask.promise;
+        const page = await pdf.getPage(pageNumber);
+        const textContent = await page.getTextContent();
+        const text = textContent.items
+          .map((item: any) => item.str)
+          .join(" ");
+        setPageText(text);
+      } catch (error) {
+        console.error("Failed to extract text:", error);
+        setPageText("");
+      }
+    };
+    extractText();
+  }, [pdfUrl, pageNumber]);
 
   const changePage = useCallback(
     (offset: number) => {
@@ -318,9 +348,19 @@ export function PdfAnnotationViewer({
   // Filter annotations for current page
   const pageAnnotations = annotations.filter((a) => a.pageNumber === pageNumber);
 
+  // Prepare paper content for AI
+  const paperContent: PaperContent = {
+    title: "Attention Is All You Need",
+    authors: ["Ashish Vaswani", "Noam Shazeer", "Niki Parmar", "Jakob Uszkoreit", "Llion Jones", "Aidan N. Gomez", "Łukasz Kaiser", "Illia Polosukhin"],
+    abstract: "The dominant sequence transduction models are based on complex recurrent or convolutional neural networks...",
+    pageText,
+    pageNumber,
+    totalPages: numPages,
+  };
+
   return (
-    <div className="flex h-[700px] bg-slate-100 dark:bg-slate-950 rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800">
-      {/* Left Panel */}
+    <div className="relative flex h-[750px] bg-slate-100 dark:bg-slate-950 rounded-xl overflow-hidden border border-slate-200 dark:border-slate-800">
+      {/* Left Panel - Annotations */}
       <AnnotationPanel
         annotations={annotations}
         selectedAnnotationId={selectedAnnotationId}
@@ -339,10 +379,12 @@ export function PdfAnnotationViewer({
           setPendingHighlight(null);
           window.getSelection()?.removeAllRanges();
         }}
+        showAIPanel={showAIPanel}
+        onToggleAIPanel={() => setShowAIPanel(!showAIPanel)}
       />
 
       {/* Main PDF Area */}
-      <div className="flex-1 flex flex-col">
+      <div className="flex-1 flex flex-col min-w-0">
         {/* PDF Controls */}
         <div className="flex items-center justify-between px-4 py-2 bg-slate-800 border-b border-slate-700">
           <div className="flex items-center gap-2">
@@ -402,7 +444,7 @@ export function PdfAnnotationViewer({
           )}
           
           <div className="flex items-center gap-1">
-            <span className="text-xs text-slate-400 mr-2">
+            <span className="text-xs text-slate-400 mr-2 hidden lg:inline">
               "Attention Is All You Need" (2017)
             </span>
             <Button
@@ -425,6 +467,24 @@ export function PdfAnnotationViewer({
               className="text-white hover:bg-slate-700 h-8 px-2"
             >
               <ZoomIn className="w-4 h-4" />
+            </Button>
+            
+            {/* AI Panel Toggle */}
+            <div className="w-px h-6 bg-slate-600 mx-2" />
+            <Button
+              variant={showAIPanel ? "default" : "ghost"}
+              size="sm"
+              onClick={() => setShowAIPanel(!showAIPanel)}
+              className={`h-8 px-3 gap-1.5 ${showAIPanel ? 'bg-indigo-600 hover:bg-indigo-700 text-white' : 'text-white hover:bg-slate-700'}`}
+              title={showAIPanel ? "Hide AI Companion" : "Show AI Companion"}
+            >
+              <Bot className="w-4 h-4" />
+              <span className="text-xs font-medium">AI</span>
+              {showAIPanel ? (
+                <PanelRightClose className="w-4 h-4" />
+              ) : (
+                <PanelRightOpen className="w-4 h-4" />
+              )}
             </Button>
           </div>
         </div>
@@ -574,6 +634,27 @@ export function PdfAnnotationViewer({
           </div>
         </div>
       </div>
+
+      {/* Right Panel - AI Companion (Overlay/Drawer) */}
+      <div 
+        className={`fixed top-0 right-0 h-full w-[380px] bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-700 shadow-2xl transform transition-transform duration-300 ease-in-out z-50 ${
+          showAIPanel ? 'translate-x-0' : 'translate-x-full'
+        }`}
+      >
+        <AICompanionPanel
+          paperContent={paperContent}
+          onAddAnnotation={handleAddAnnotation}
+          existingAnnotations={annotations}
+        />
+      </div>
+      
+      {/* Overlay backdrop when AI panel is open */}
+      {showAIPanel && (
+        <div 
+          className="fixed inset-0 bg-black/20 z-40"
+          onClick={() => setShowAIPanel(false)}
+        />
+      )}
     </div>
   );
 }

@@ -136,7 +136,7 @@ export default function Home() {
 
       {/* Live Demo Section */}
       <section id="demo" className="py-16">
-        <div className="container">
+        <div className="max-w-[1600px] mx-auto px-4">
           <div className="text-center mb-8">
             <h2 className="text-3xl font-bold text-slate-900 dark:text-white mb-4">
               Interactive Demo

@@ -17,6 +17,7 @@ import {
   Sigma,
   Palette,
   X,
+  Bot,
 } from "lucide-react";
 import { Annotation, ANNOTATION_COLORS, TYPE_COLORS } from "./AnnotationDanmaku";
 import katex from "katex";
@@ -37,6 +38,8 @@ interface AnnotationPanelProps {
     height: number;
   } | null;
   onClearPendingHighlight: () => void;
+  showAIPanel?: boolean;
+  onToggleAIPanel?: () => void;
 }
 
 export function AnnotationPanel({
@@ -50,6 +53,8 @@ export function AnnotationPanel({
   onToggleCreatingMode,
   pendingHighlight,
   onClearPendingHighlight,
+  showAIPanel,
+  onToggleAIPanel,
 }: AnnotationPanelProps) {
   const [filterType, setFilterType] = useState<string>("all");
   const [showAllUsers, setShowAllUsers] = useState(true);
@@ -114,7 +119,7 @@ export function AnnotationPanel({
   };
 
   return (
-    <div className="w-80 h-full bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-700 flex flex-col">
+    <div className="w-72 h-full bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-700 flex flex-col">
       {/* Header */}
       <div className="p-4 border-b border-slate-200 dark:border-slate-700">
         <div className="flex items-center justify-between mb-3">
@@ -136,6 +141,17 @@ export function AnnotationPanel({
                 <Eye className="w-4 h-4" />
               )}
             </Button>
+            {onToggleAIPanel && (
+              <Button
+                variant={showAIPanel ? "default" : "ghost"}
+                size="sm"
+                onClick={onToggleAIPanel}
+                className={`h-8 w-8 p-0 ${showAIPanel ? 'bg-indigo-600 hover:bg-indigo-700 text-white' : ''}`}
+                title={showAIPanel ? "Hide AI Assistant" : "Show AI Assistant"}
+              >
+                <Bot className="w-4 h-4" />
+              </Button>
+            )}
           </div>
         </div>
 
@@ -157,6 +173,17 @@ export function AnnotationPanel({
               Add Annotation
             </>
           )}
+        </Button>
+
+        {/* AI Assistant Button */}
+        <Button
+          onClick={onToggleAIPanel}
+          variant={showAIPanel ? "default" : "outline"}
+          className={`w-full gap-2 mt-2 ${showAIPanel ? 'bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white border-0' : ''}`}
+          size="sm"
+        >
+          <Bot className="w-4 h-4" />
+          {showAIPanel ? 'Hide AI Assistant' : 'AI Assistant'}
         </Button>
 
         {isCreatingMode && !pendingHighlight && (
