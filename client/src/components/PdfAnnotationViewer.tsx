@@ -1,11 +1,16 @@
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useEffect } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
+import "react-pdf/dist/Page/TextLayer.css";
+import "react-pdf/dist/Page/AnnotationLayer.css";
+import "./pdf-styles.css";
 import { Button } from "@/components/ui/button";
 import {
   ChevronLeft,
   ChevronRight,
   ZoomIn,
   ZoomOut,
+  Type,
+  Square,
 } from "lucide-react";
 import { nanoid } from "nanoid";
 import {
@@ -96,6 +101,8 @@ const SAMPLE_ANNOTATIONS: Annotation[] = [
   },
 ];
 
+type SelectionMode = "text" | "region";
+
 export function PdfAnnotationViewer({
   pdfUrl = "/papers/attention-paper.pdf",
   initialAnnotations = SAMPLE_ANNOTATIONS,
@@ -111,11 +118,13 @@ export function PdfAnnotationViewer({
   const [annotations, setAnnotations] = useState<Annotation[]>(initialAnnotations);
   const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
   const [isCreatingMode, setIsCreatingMode] = useState(false);
+  const [selectionMode, setSelectionMode] = useState<SelectionMode>("text");
   const [pendingHighlight, setPendingHighlight] = useState<{
     x: number;
     y: number;
     width: number;
     height: number;
+    selectedText?: string;
   } | null>(null);
 
   // Selection state for drawing
@@ -123,6 +132,7 @@ export function PdfAnnotationViewer({
   const [drawStart, setDrawStart] = useState<{ x: number; y: number } | null>(null);
   const [drawCurrent, setDrawCurrent] = useState<{ x: number; y: number } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const pageRef = useRef<HTMLDivElement>(null);
 
   const onDocumentLoadSuccess = useCallback(
     ({ numPages }: { numPages: number }) => {
@@ -153,10 +163,58 @@ export function PdfAnnotationViewer({
     setScale((prevScale) => Math.max(0.5, Math.min(prevScale + delta, 1.5)));
   }, []);
 
-  // Handle mouse events for drawing selection
+  // Handle text selection from PDF
+  useEffect(() => {
+    if (!isCreatingMode || selectionMode !== "text") return;
+
+    const handleSelectionChange = () => {
+      const selection = window.getSelection();
+      if (!selection || selection.isCollapsed) return;
+
+      const selectedText = selection.toString().trim();
+      if (!selectedText || selectedText.length < 2) return;
+
+      // Get the selection range
+      const range = selection.getRangeAt(0);
+      const rects = range.getClientRects();
+      
+      if (rects.length === 0 || !containerRef.current) return;
+
+      const containerRect = containerRef.current.getBoundingClientRect();
+      
+      // Calculate bounding box of all rects
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      
+      for (let i = 0; i < rects.length; i++) {
+        const rect = rects[i];
+        minX = Math.min(minX, rect.left - containerRect.left);
+        minY = Math.min(minY, rect.top - containerRect.top);
+        maxX = Math.max(maxX, rect.right - containerRect.left);
+        maxY = Math.max(maxY, rect.bottom - containerRect.top);
+      }
+
+      // Convert to unscaled coordinates
+      const highlight = {
+        x: minX / scale,
+        y: minY / scale,
+        width: (maxX - minX) / scale,
+        height: (maxY - minY) / scale,
+        selectedText,
+      };
+
+      if (highlight.width > 5 && highlight.height > 5) {
+        setPendingHighlight(highlight);
+      }
+    };
+
+    document.addEventListener("mouseup", handleSelectionChange);
+    return () => document.removeEventListener("mouseup", handleSelectionChange);
+  }, [isCreatingMode, selectionMode, scale]);
+
+  // Handle mouse events for drawing selection (region mode)
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
-      if (!isCreatingMode || !containerRef.current) return;
+      if (!isCreatingMode || selectionMode !== "region" || !containerRef.current) return;
 
       const rect = containerRef.current.getBoundingClientRect();
       const x = (e.clientX - rect.left) / scale;
@@ -166,7 +224,7 @@ export function PdfAnnotationViewer({
       setDrawStart({ x, y });
       setDrawCurrent({ x, y });
     },
-    [isCreatingMode, scale]
+    [isCreatingMode, selectionMode, scale]
   );
 
   const handleMouseMove = useCallback(
@@ -218,6 +276,8 @@ export function PdfAnnotationViewer({
       };
       setAnnotations((prev) => [...prev, annotation]);
       setSelectedAnnotationId(annotation.id);
+      // Clear text selection after adding annotation
+      window.getSelection()?.removeAllRanges();
     },
     []
   );
@@ -270,9 +330,13 @@ export function PdfAnnotationViewer({
         onToggleCreatingMode={() => {
           setIsCreatingMode(!isCreatingMode);
           setPendingHighlight(null);
+          window.getSelection()?.removeAllRanges();
         }}
         pendingHighlight={pendingHighlight}
-        onClearPendingHighlight={() => setPendingHighlight(null)}
+        onClearPendingHighlight={() => {
+          setPendingHighlight(null);
+          window.getSelection()?.removeAllRanges();
+        }}
       />
 
       {/* Main PDF Area */}
@@ -302,6 +366,39 @@ export function PdfAnnotationViewer({
               <ChevronRight className="w-4 h-4" />
             </Button>
           </div>
+          
+          {/* Selection mode toggle */}
+          {isCreatingMode && (
+            <div className="flex items-center gap-1 bg-slate-700 rounded-lg p-1">
+              <Button
+                variant={selectionMode === "text" ? "default" : "ghost"}
+                size="sm"
+                onClick={() => setSelectionMode("text")}
+                className={`h-7 px-3 text-xs ${
+                  selectionMode === "text" 
+                    ? "bg-indigo-600 hover:bg-indigo-700" 
+                    : "text-slate-300 hover:bg-slate-600"
+                }`}
+              >
+                <Type className="w-3.5 h-3.5 mr-1.5" />
+                Text Select
+              </Button>
+              <Button
+                variant={selectionMode === "region" ? "default" : "ghost"}
+                size="sm"
+                onClick={() => setSelectionMode("region")}
+                className={`h-7 px-3 text-xs ${
+                  selectionMode === "region" 
+                    ? "bg-indigo-600 hover:bg-indigo-700" 
+                    : "text-slate-300 hover:bg-slate-600"
+                }`}
+              >
+                <Square className="w-3.5 h-3.5 mr-1.5" />
+                Region Select
+              </Button>
+            </div>
+          )}
+          
           <div className="flex items-center gap-1">
             <span className="text-xs text-slate-400 mr-2">
               "Attention Is All You Need" (2017)
@@ -343,46 +440,48 @@ export function PdfAnnotationViewer({
 
           <div
             ref={containerRef}
-            className={`relative ${isCreatingMode ? "cursor-crosshair" : ""}`}
+            className={`relative ${isCreatingMode && selectionMode === "region" ? "cursor-crosshair" : ""}`}
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
             onMouseLeave={handleMouseUp}
           >
-            <Document
-              file={pdfUrl}
-              onLoadSuccess={onDocumentLoadSuccess}
-              loading={null}
-              error={
-                <div className="flex items-center justify-center h-64">
-                  <div className="text-red-400 text-center">
-                    <p>Failed to load PDF</p>
-                    <p className="text-xs text-slate-500 mt-2">
-                      Please check your connection
-                    </p>
-                  </div>
-                </div>
-              }
-              className="flex justify-center"
-            >
-              <Page
-                pageNumber={pageNumber}
-                scale={scale}
-                renderTextLayer={false}
-                renderAnnotationLayer={false}
-                className="shadow-2xl"
+            <div ref={pageRef}>
+              <Document
+                file={pdfUrl}
+                onLoadSuccess={onDocumentLoadSuccess}
                 loading={null}
-                onLoadSuccess={onPageLoadSuccess}
-              />
-            </Document>
+                error={
+                  <div className="flex items-center justify-center h-64">
+                    <div className="text-red-400 text-center">
+                      <p>Failed to load PDF</p>
+                      <p className="text-xs text-slate-500 mt-2">
+                        Please check your connection
+                      </p>
+                    </div>
+                  </div>
+                }
+                className="flex justify-center"
+              >
+                <Page
+                  pageNumber={pageNumber}
+                  scale={scale}
+                  renderTextLayer={true}
+                  renderAnnotationLayer={true}
+                  className="shadow-2xl pdf-page-with-text"
+                  loading={null}
+                  onLoadSuccess={onPageLoadSuccess}
+                />
+              </Document>
+            </div>
 
             {/* SVG Overlay for Annotations */}
             {pageSize.width > 0 && (
               <svg
-                className="absolute top-0 left-0"
+                className="absolute top-0 left-0 pointer-events-none"
                 width={pageSize.width * scale}
                 height={pageSize.height * scale}
-                style={{ overflow: "visible", pointerEvents: "none" }}
+                style={{ overflow: "visible" }}
               >
                 {/* Render existing annotations */}
                 {pageAnnotations.map((annotation) => (
@@ -437,7 +536,15 @@ export function PdfAnnotationViewer({
             <span>{pageAnnotations.length} annotations on this page</span>
             {isCreatingMode && (
               <span className="text-amber-400">
-                Selection mode active - drag to highlight
+                {selectionMode === "text" 
+                  ? "Text selection mode - select text in the PDF to highlight"
+                  : "Region selection mode - drag to draw a rectangle"
+                }
+              </span>
+            )}
+            {pendingHighlight?.selectedText && (
+              <span className="text-indigo-400 truncate max-w-[200px]">
+                Selected: "{pendingHighlight.selectedText}"
               </span>
             )}
           </div>

@@ -1,0 +1,53 @@
+/* Custom styles for PDF text layer to enable text selection */
+
+.pdf-page-with-text {
+  position: relative;
+}
+
+/* Text layer styling */
+.pdf-page-with-text .react-pdf__Page__textContent {
+  position: absolute !important;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  overflow: hidden;
+  opacity: 1;
+  line-height: 1;
+  user-select: text;
+  pointer-events: auto;
+}
+
+.pdf-page-with-text .react-pdf__Page__textContent span {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  transform-origin: 0% 0%;
+  cursor: text;
+}
+
+/* Highlight selected text */
+.pdf-page-with-text .react-pdf__Page__textContent span::selection {
+  background-color: rgba(99, 102, 241, 0.4);
+  color: transparent;
+}
+
+/* Annotation layer styling */
+.pdf-page-with-text .react-pdf__Page__annotations {
+  position: absolute !important;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  pointer-events: auto;
+}
+
+.pdf-page-with-text .react-pdf__Page__annotations a {
+  color: #3b82f6;
+  text-decoration: underline;
+}
+
+/* Canvas styling */
+.pdf-page-with-text .react-pdf__Page__canvas {
+  display: block;
+}
