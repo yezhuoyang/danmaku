@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import { Button } from "@/components/ui/button";
 import {
@@ -6,7 +6,6 @@ import {
   ChevronRight,
   ZoomIn,
   ZoomOut,
-  Maximize2,
 } from "lucide-react";
 import { nanoid } from "nanoid";
 import {
@@ -229,6 +228,18 @@ export function PdfAnnotationViewer({
     setSelectedAnnotationId(null);
   }, []);
 
+  // Update annotation position handler (for drag)
+  const handlePositionChange = useCallback(
+    (id: string, newPosition: { x: number; y: number }) => {
+      setAnnotations((prev) =>
+        prev.map((a) =>
+          a.id === id ? { ...a, position: newPosition } : a
+        )
+      );
+    },
+    []
+  );
+
   // Get current drawing rectangle
   const getDrawingRect = () => {
     if (!drawStart || !drawCurrent) return null;
@@ -368,10 +379,10 @@ export function PdfAnnotationViewer({
             {/* SVG Overlay for Annotations */}
             {pageSize.width > 0 && (
               <svg
-                className="absolute top-0 left-0 pointer-events-none"
+                className="absolute top-0 left-0"
                 width={pageSize.width * scale}
                 height={pageSize.height * scale}
-                style={{ overflow: "visible" }}
+                style={{ overflow: "visible", pointerEvents: "none" }}
               >
                 {/* Render existing annotations */}
                 {pageAnnotations.map((annotation) => (
@@ -380,7 +391,10 @@ export function PdfAnnotationViewer({
                     annotation={annotation}
                     isSelected={selectedAnnotationId === annotation.id}
                     onSelect={setSelectedAnnotationId}
+                    onDelete={handleDeleteAnnotation}
+                    onPositionChange={handlePositionChange}
                     scale={scale}
+                    containerRef={containerRef as React.RefObject<HTMLElement>}
                   />
                 ))}
 

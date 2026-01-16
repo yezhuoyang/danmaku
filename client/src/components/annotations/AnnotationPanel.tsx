@@ -16,6 +16,7 @@ import {
   Type,
   Sigma,
   Palette,
+  X,
 } from "lucide-react";
 import { Annotation, ANNOTATION_COLORS, TYPE_COLORS } from "./AnnotationDanmaku";
 import katex from "katex";
@@ -342,6 +343,7 @@ function AnnotationListItem({
   onDelete: () => void;
 }) {
   const contentRef = useRef<HTMLDivElement>(null);
+  const [isHovered, setIsHovered] = useState(false);
 
   useEffect(() => {
     if (annotation.latex && contentRef.current) {
@@ -359,14 +361,34 @@ function AnnotationListItem({
   return (
     <div
       className={`
-        p-3 rounded-lg border cursor-pointer transition-all
+        p-3 rounded-lg border cursor-pointer transition-all relative
         ${isSelected
           ? "bg-indigo-50 dark:bg-indigo-900/20 border-indigo-300 dark:border-indigo-600"
           : "bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600"
         }
       `}
       onClick={onSelect}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
     >
+      {/* Delete button - top right corner */}
+      <button
+        className={`
+          absolute -top-2 -right-2 w-5 h-5 rounded-full
+          bg-red-500 hover:bg-red-600 text-white
+          flex items-center justify-center
+          shadow-md transition-all duration-200 z-10
+          ${isHovered || isSelected ? "opacity-100 scale-100" : "opacity-0 scale-75"}
+        `}
+        onClick={(e) => {
+          e.stopPropagation();
+          onDelete();
+        }}
+        title="Delete annotation"
+      >
+        <X className="w-3 h-3" />
+      </button>
+
       <div className="flex items-start gap-2">
         {/* Color indicator */}
         <div
@@ -392,17 +414,6 @@ function AnnotationListItem({
                   {annotation.highlightRegion.label}
                 </span>
               )}
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-5 w-5 p-0 opacity-0 group-hover:opacity-100 hover:text-red-500"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onDelete();
-                }}
-              >
-                <Trash2 className="w-3 h-3" />
-              </Button>
             </div>
           </div>
 
