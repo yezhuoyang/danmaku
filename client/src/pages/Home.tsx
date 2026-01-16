@@ -1,556 +1,286 @@
-import { motion } from "framer-motion";
-import { DemoSandbox } from "@/components/DemoSandbox";
-import { ComponentCard } from "@/components/ComponentCard";
-import { CodeBlock } from "@/components/CodeBlock";
-import { ArchitectureDiagram } from "@/components/ArchitectureDiagram";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  Box,
-  Layers,
+  FileText,
   MessageSquare,
-  Settings,
-  Zap,
-  Shield,
-  Gauge,
-  Code2,
+  Palette,
+  Users,
+  Sigma,
+  Layers,
   Github,
   BookOpen,
-  Play,
   ArrowRight,
   Sparkles,
+  Target,
+  Zap,
 } from "lucide-react";
-
-const fadeInUp = {
-  initial: { opacity: 0, y: 20 },
-  animate: { opacity: 1, y: 0 },
-  transition: { duration: 0.5 },
-};
-
-const COMPONENT_DATA = [
-  {
-    name: "DanmakuContainer",
-    description: "Main container that manages multiple danmaku messages with collision detection and track-based positioning.",
-    icon: Box,
-    features: ["Track-based positioning", "Collision detection", "Queue management"],
-    props: [
-      { name: "messages", type: "DanmakuMessage[]", description: "Array of danmaku messages to display" },
-      { name: "enabled", type: "boolean", default: "true", description: "Whether danmaku display is enabled" },
-      { name: "speed", type: "number", default: "3", description: "Animation speed level (1-5)" },
-      { name: "opacity", type: "number", default: "1", description: "Opacity of danmaku (0-1)" },
-      { name: "fontSize", type: "number", default: "16", description: "Font size in pixels" },
-    ],
-  },
-  {
-    name: "DanmakuItem",
-    description: "Individual danmaku message component with smooth CSS animation for horizontal scrolling.",
-    icon: MessageSquare,
-    features: ["Smooth animation", "Text shadow", "User attribution"],
-    props: [
-      { name: "text", type: "string", description: "The danmaku message content" },
-      { name: "color", type: "string", default: '"#ffffff"', description: "Text color" },
-      { name: "speed", type: "number", default: "10", description: "Animation duration in seconds" },
-      { name: "top", type: "number", description: "Vertical position in pixels" },
-      { name: "userName", type: "string", description: "Name of the user who posted" },
-    ],
-  },
-  {
-    name: "DanmakuInput",
-    description: "Input component for users to send new danmaku messages with character counter and validation.",
-    icon: Code2,
-    features: ["Character counter", "Enter key support", "Input validation"],
-    props: [
-      { name: "onSend", type: "(text: string) => void", description: "Callback when user sends a danmaku" },
-      { name: "placeholder", type: "string", default: '"发送弹幕..."', description: "Input placeholder text" },
-      { name: "maxLength", type: "number", default: "50", description: "Maximum length of danmaku text" },
-      { name: "disabled", type: "boolean", default: "false", description: "Whether input is disabled" },
-    ],
-  },
-  {
-    name: "DanmakuControl",
-    description: "Control panel for danmaku settings including toggle, speed, opacity, and font size adjustments.",
-    icon: Settings,
-    features: ["Toggle switch", "Speed slider", "Opacity control", "Font size"],
-    props: [
-      { name: "enabled", type: "boolean", description: "Whether danmaku is enabled" },
-      { name: "speed", type: "number", description: "Current speed level (1-5)" },
-      { name: "opacity", type: "number", description: "Current opacity (0-1)" },
-      { name: "fontSize", type: "number", description: "Current font size (12-24)" },
-      { name: "onToggle", type: "(enabled: boolean) => void", description: "Callback when toggle changes" },
-    ],
-  },
-];
-
-const CODE_EXAMPLES = {
-  basic: `import { DanmakuContainer, DanmakuInput } from './components/danmaku';
-
-function PdfReader() {
-  const [messages, setMessages] = useState([]);
-
-  const handleSend = (text) => {
-    setMessages(prev => [...prev, {
-      id: nanoid(),
-      text,
-      userName: 'User'
-    }]);
-  };
-
-  return (
-    <div className="relative">
-      <PdfViewer />
-      <DanmakuContainer messages={messages} />
-      <DanmakuInput onSend={handleSend} />
-    </div>
-  );
-}`,
-  advanced: `// Advanced usage with all controls
-const [settings, setSettings] = useState({
-  enabled: true,
-  speed: 3,
-  opacity: 1,
-  fontSize: 16
-});
-
-<DanmakuContainer
-  messages={messages}
-  enabled={settings.enabled}
-  speed={settings.speed}
-  opacity={settings.opacity}
-  fontSize={settings.fontSize}
-/>
-
-<DanmakuControl
-  {...settings}
-  onToggle={(enabled) => setSettings(s => ({...s, enabled}))}
-  onSpeedChange={(speed) => setSettings(s => ({...s, speed}))}
-  onOpacityChange={(opacity) => setSettings(s => ({...s, opacity}))}
-  onFontSizeChange={(fontSize) => setSettings(s => ({...s, fontSize}))}
-/>`,
-  api: `// Backend API Integration
-// Fetch danmaku for a specific page
-const fetchDanmaku = async (paperId, pageIndex) => {
-  const response = await axios.get('/kanfa/getKanfasByPaperId', {
-    params: { paperId, paperIndex: pageIndex }
-  });
-  return response.data.kanfaList;
-};
-
-// Send new danmaku
-const sendDanmaku = async (paperId, pageIndex, text) => {
-  await axios.post('/kanfa/addKanfa', {
-    paperId,
-    paperIndex: pageIndex,
-    text
-  });
-};`,
-};
+import { PdfAnnotationViewer } from "@/components/PdfAnnotationViewer";
 
 export default function Home() {
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-gradient-to-b from-slate-50 to-white dark:from-slate-950 dark:to-slate-900">
       {/* Navigation */}
-      <nav className="sticky top-0 z-50 bg-background/80 backdrop-blur-md border-b border-border">
+      <nav className="sticky top-0 z-50 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md border-b border-slate-200 dark:border-slate-800">
         <div className="container flex items-center justify-between h-16">
-          <div className="flex items-center gap-3">
-            <div className="p-2 rounded-lg bg-primary/10">
-              <Sparkles className="w-5 h-5 text-primary" />
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-lg flex items-center justify-center">
+              <MessageSquare className="w-4 h-4 text-white" />
             </div>
-            <span className="font-bold text-lg">Danmaku Showcase</span>
+            <span className="font-semibold text-slate-800 dark:text-slate-100">
+              Paper Danmaku
+            </span>
           </div>
           <div className="hidden md:flex items-center gap-6">
-            <a href="#demo" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
+            <a href="#demo" className="text-sm text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors">
               Demo
             </a>
-            <a href="#components" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
-              Components
+            <a href="#features" className="text-sm text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors">
+              Features
             </a>
-            <a href="#architecture" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
-              Architecture
-            </a>
-            <a href="#code" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
-              Code
+            <a href="#how-it-works" className="text-sm text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors">
+              How It Works
             </a>
           </div>
           <Button variant="outline" size="sm" className="gap-2">
             <Github className="w-4 h-4" />
-            <span className="hidden sm:inline">View Source</span>
+            View Source
           </Button>
         </div>
       </nav>
 
       {/* Hero Section */}
-      <section className="relative overflow-hidden">
-        <div className="absolute inset-0 bg-gradient-to-br from-primary/5 via-transparent to-purple-500/5" />
-        <div
-          className="absolute inset-0 opacity-30"
-          style={{
-            backgroundImage: `radial-gradient(circle at 1px 1px, rgba(99, 102, 241, 0.15) 1px, transparent 0)`,
-            backgroundSize: "32px 32px",
-          }}
-        />
-
-        <div className="container relative py-20 md:py-32">
-          <motion.div
-            className="max-w-3xl mx-auto text-center"
-            initial={{ opacity: 0, y: 30 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.6 }}
-          >
-            <Badge variant="secondary" className="mb-4">
-              Interactive Component Showcase
-            </Badge>
-            <h1 className="text-4xl md:text-6xl font-extrabold tracking-tight mb-6">
-              <span className="gradient-text">Bullet Screen</span>
-              <br />
-              <span className="text-foreground">Feature Architecture</span>
+      <section className="py-20 md:py-28">
+        <div className="container">
+          <div className="max-w-3xl mx-auto text-center">
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 text-sm mb-6">
+              <Sparkles className="w-4 h-4" />
+              Collaborative Research Tool
+            </div>
+            <h1 className="text-4xl md:text-5xl lg:text-6xl font-bold text-slate-900 dark:text-white mb-6 leading-tight">
+              Read Papers Together with{" "}
+              <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-purple-600">
+                Danmaku Annotations
+              </span>
             </h1>
-            <p className="text-lg md:text-xl text-muted-foreground mb-8 max-w-2xl mx-auto">
-              Explore the danmaku (弹幕) system for collaborative paper reading.
-              Interactive demos, live code examples, and comprehensive documentation.
+            <p className="text-lg text-slate-600 dark:text-slate-300 mb-8 max-w-2xl mx-auto">
+              Add fixed annotations connected to specific text, figures, tables, and equations in research papers. 
+              Support for LaTeX, custom colors, and real-time collaboration with other researchers.
             </p>
-            <div className="flex flex-wrap justify-center gap-4">
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
               <Button size="lg" className="gap-2" asChild>
                 <a href="#demo">
-                  <Play className="w-4 h-4" />
                   Try Live Demo
+                  <ArrowRight className="w-4 h-4" />
                 </a>
               </Button>
-              <Button size="lg" variant="outline" className="gap-2" asChild>
-                <a href="#components">
-                  <BookOpen className="w-4 h-4" />
-                  View Components
-                </a>
+              <Button variant="outline" size="lg" className="gap-2">
+                <BookOpen className="w-4 h-4" />
+                Documentation
               </Button>
             </div>
-          </motion.div>
+          </div>
         </div>
       </section>
 
       {/* Features Grid */}
-      <section className="py-16 bg-muted/30">
+      <section id="features" className="py-16 bg-slate-50 dark:bg-slate-900/50">
         <div className="container">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {[
-              {
-                icon: Zap,
-                title: "High Performance",
-                description: "60 FPS animations with hardware-accelerated CSS transforms and efficient track-based collision detection.",
-              },
-              {
-                icon: Shield,
-                title: "Collision Detection",
-                description: "Smart track-based positioning system prevents overlapping danmaku for optimal readability.",
-              },
-              {
-                icon: Gauge,
-                title: "Customizable",
-                description: "Adjust speed, opacity, font size, and more. Full control over the danmaku experience.",
-              },
-            ].map((feature, i) => (
-              <motion.div
-                key={feature.title}
-                className="p-6 rounded-xl bg-background border border-border hover:shadow-lg transition-shadow"
-                initial={{ opacity: 0, y: 20 }}
-                whileInView={{ opacity: 1, y: 0 }}
-                viewport={{ once: true }}
-                transition={{ delay: i * 0.1 }}
-              >
-                <div className="p-3 rounded-lg bg-primary/10 w-fit mb-4">
-                  <feature.icon className="w-6 h-6 text-primary" />
-                </div>
-                <h3 className="font-semibold text-lg mb-2">{feature.title}</h3>
-                <p className="text-sm text-muted-foreground">{feature.description}</p>
-              </motion.div>
-            ))}
+          <div className="text-center mb-12">
+            <h2 className="text-3xl font-bold text-slate-900 dark:text-white mb-4">
+              Powerful Annotation Features
+            </h2>
+            <p className="text-slate-600 dark:text-slate-400 max-w-2xl mx-auto">
+              Everything you need for collaborative paper reading and annotation
+            </p>
+          </div>
+          <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+            <FeatureCard
+              icon={Target}
+              title="Fixed Annotations"
+              description="Annotations stay connected to specific regions in the PDF - text, figures, tables, or equations."
+              color="indigo"
+            />
+            <FeatureCard
+              icon={Sigma}
+              title="LaTeX Support"
+              description="Write mathematical formulas and equations using LaTeX syntax with live preview."
+              color="purple"
+            />
+            <FeatureCard
+              icon={Palette}
+              title="Custom Colors"
+              description="Choose from 8 vibrant colors to categorize and personalize your annotations."
+              color="pink"
+            />
+            <FeatureCard
+              icon={Layers}
+              title="Region Types"
+              description="Mark annotations as text, figure, table, or equation for better organization."
+              color="cyan"
+            />
+            <FeatureCard
+              icon={Users}
+              title="Collaborative"
+              description="See annotations from all users in real-time. Perfect for research groups and reading clubs."
+              color="green"
+            />
+            <FeatureCard
+              icon={Zap}
+              title="Instant Sync"
+              description="Changes sync instantly across all connected users without page refresh."
+              color="amber"
+            />
           </div>
         </div>
       </section>
 
       {/* Live Demo Section */}
-      <section id="demo" className="py-20">
+      <section id="demo" className="py-16">
         <div className="container">
-          <motion.div className="text-center mb-12" {...fadeInUp}>
-            <Badge variant="outline" className="mb-4">
+          <div className="text-center mb-8">
+            <h2 className="text-3xl font-bold text-slate-900 dark:text-white mb-4">
               Interactive Demo
-            </Badge>
-            <h2 className="text-3xl md:text-4xl font-bold mb-4">
-              Try It Yourself
             </h2>
-            <p className="text-muted-foreground max-w-2xl mx-auto">
-              Experience the danmaku system in action. Send messages, adjust settings,
-              and see how the collision detection keeps everything organized.
+            <p className="text-slate-600 dark:text-slate-400 max-w-2xl mx-auto">
+              Try the annotation system with the famous "Attention Is All You Need" paper. 
+              Click "Add Annotation" then drag on the PDF to create a highlight region.
             </p>
-          </motion.div>
+          </div>
+          <PdfAnnotationViewer />
+        </div>
+      </section>
 
-          <motion.div
-            initial={{ opacity: 0, scale: 0.95 }}
-            whileInView={{ opacity: 1, scale: 1 }}
-            viewport={{ once: true }}
-            transition={{ duration: 0.5 }}
-          >
-            <DemoSandbox
-              title="Live Danmaku Demo"
-              description="Click 'Play Demo' to see sample messages, or type your own in the input below."
-              showControls={true}
-              showInput={true}
+      {/* How It Works */}
+      <section id="how-it-works" className="py-16 bg-slate-50 dark:bg-slate-900/50">
+        <div className="container">
+          <div className="text-center mb-12">
+            <h2 className="text-3xl font-bold text-slate-900 dark:text-white mb-4">
+              How It Works
+            </h2>
+            <p className="text-slate-600 dark:text-slate-400 max-w-2xl mx-auto">
+              Create annotations in three simple steps
+            </p>
+          </div>
+          <div className="grid md:grid-cols-3 gap-8 max-w-4xl mx-auto">
+            <StepCard
+              number={1}
+              title="Select Region"
+              description="Click 'Add Annotation' and drag on the PDF to highlight text, figures, or tables you want to annotate."
             />
-          </motion.div>
-        </div>
-      </section>
-
-      {/* Components Section */}
-      <section id="components" className="py-20 bg-muted/30">
-        <div className="container">
-          <motion.div className="text-center mb-12" {...fadeInUp}>
-            <Badge variant="outline" className="mb-4">
-              Component Library
-            </Badge>
-            <h2 className="text-3xl md:text-4xl font-bold mb-4">
-              Four Core Components
-            </h2>
-            <p className="text-muted-foreground max-w-2xl mx-auto">
-              The danmaku system is built from four modular, reusable React components.
-              Each component has a specific responsibility and can be customized via props.
-            </p>
-          </motion.div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {COMPONENT_DATA.map((component) => (
-              <ComponentCard key={component.name} {...component} />
-            ))}
+            <StepCard
+              number={2}
+              title="Add Content"
+              description="Choose a type (text/figure/table/equation), pick a color, and write your annotation. LaTeX supported!"
+            />
+            <StepCard
+              number={3}
+              title="Collaborate"
+              description="Your annotation appears instantly for all users. Click any annotation to view details or navigate to it."
+            />
           </div>
         </div>
       </section>
 
-      {/* Architecture Section */}
-      <section id="architecture" className="py-20">
-        <div className="container">
-          <motion.div className="text-center mb-12" {...fadeInUp}>
-            <Badge variant="outline" className="mb-4">
-              System Design
-            </Badge>
-            <h2 className="text-3xl md:text-4xl font-bold mb-4">
-              Component Architecture
-            </h2>
-            <p className="text-muted-foreground max-w-2xl mx-auto">
-              Understanding how the components work together to create a seamless
-              danmaku experience integrated with the PDF reader.
-            </p>
-          </motion.div>
-
-          <div className="max-w-4xl mx-auto">
-            <ArchitectureDiagram />
-          </div>
-
-          {/* Architecture details */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mt-12">
-            <motion.div
-              className="p-6 rounded-xl bg-card border border-border"
-              initial={{ opacity: 0, x: -20 }}
-              whileInView={{ opacity: 1, x: 0 }}
-              viewport={{ once: true }}
-            >
-              <h3 className="font-semibold text-lg mb-4 flex items-center gap-2">
-                <Layers className="w-5 h-5 text-primary" />
-                State Management
-              </h3>
-              <ul className="space-y-3 text-sm text-muted-foreground">
-                <li className="flex items-start gap-2">
-                  <ArrowRight className="w-4 h-4 mt-0.5 text-primary flex-shrink-0" />
-                  React component state for danmaku settings
-                </li>
-                <li className="flex items-start gap-2">
-                  <ArrowRight className="w-4 h-4 mt-0.5 text-primary flex-shrink-0" />
-                  EventProxy for page change events
-                </li>
-                <li className="flex items-start gap-2">
-                  <ArrowRight className="w-4 h-4 mt-0.5 text-primary flex-shrink-0" />
-                  Local queue for danmaku display management
-                </li>
-                <li className="flex items-start gap-2">
-                  <ArrowRight className="w-4 h-4 mt-0.5 text-primary flex-shrink-0" />
-                  Track occupancy tracking with timestamps
-                </li>
-              </ul>
-            </motion.div>
-
-            <motion.div
-              className="p-6 rounded-xl bg-card border border-border"
-              initial={{ opacity: 0, x: 20 }}
-              whileInView={{ opacity: 1, x: 0 }}
-              viewport={{ once: true }}
-            >
-              <h3 className="font-semibold text-lg mb-4 flex items-center gap-2">
-                <Gauge className="w-5 h-5 text-primary" />
-                Performance Optimizations
-              </h3>
-              <ul className="space-y-3 text-sm text-muted-foreground">
-                <li className="flex items-start gap-2">
-                  <ArrowRight className="w-4 h-4 mt-0.5 text-primary flex-shrink-0" />
-                  Track-based positioning - O(n) collision detection
-                </li>
-                <li className="flex items-start gap-2">
-                  <ArrowRight className="w-4 h-4 mt-0.5 text-primary flex-shrink-0" />
-                  Limited concurrency - max 30 active danmaku
-                </li>
-                <li className="flex items-start gap-2">
-                  <ArrowRight className="w-4 h-4 mt-0.5 text-primary flex-shrink-0" />
-                  CSS transforms for hardware acceleration
-                </li>
-                <li className="flex items-start gap-2">
-                  <ArrowRight className="w-4 h-4 mt-0.5 text-primary flex-shrink-0" />
-                  Automatic cleanup after animation completes
-                </li>
-              </ul>
-            </motion.div>
-          </div>
-        </div>
-      </section>
-
-      {/* Code Examples Section */}
-      <section id="code" className="py-20 bg-muted/30">
-        <div className="container">
-          <motion.div className="text-center mb-12" {...fadeInUp}>
-            <Badge variant="outline" className="mb-4">
-              Code Examples
-            </Badge>
-            <h2 className="text-3xl md:text-4xl font-bold mb-4">
-              Implementation Guide
-            </h2>
-            <p className="text-muted-foreground max-w-2xl mx-auto">
-              Get started quickly with these code examples. From basic usage to
-              advanced configurations and backend integration.
-            </p>
-          </motion.div>
-
-          <div className="max-w-4xl mx-auto">
-            <Tabs defaultValue="basic" className="w-full">
-              <TabsList className="grid w-full grid-cols-3 mb-6">
-                <TabsTrigger value="basic">Basic Usage</TabsTrigger>
-                <TabsTrigger value="advanced">Advanced</TabsTrigger>
-                <TabsTrigger value="api">API Integration</TabsTrigger>
-              </TabsList>
-              <TabsContent value="basic">
-                <CodeBlock
-                  code={CODE_EXAMPLES.basic}
-                  language="tsx"
-                  title="Basic Implementation"
-                />
-              </TabsContent>
-              <TabsContent value="advanced">
-                <CodeBlock
-                  code={CODE_EXAMPLES.advanced}
-                  language="tsx"
-                  title="Advanced Configuration"
-                />
-              </TabsContent>
-              <TabsContent value="api">
-                <CodeBlock
-                  code={CODE_EXAMPLES.api}
-                  language="tsx"
-                  title="Backend API Integration"
-                />
-              </TabsContent>
-            </Tabs>
-          </div>
-        </div>
-      </section>
-
-      {/* Technical Details Section */}
+      {/* CTA Section */}
       <section className="py-20">
         <div className="container">
-          <motion.div className="text-center mb-12" {...fadeInUp}>
-            <Badge variant="outline" className="mb-4">
-              Technical Details
-            </Badge>
-            <h2 className="text-3xl md:text-4xl font-bold mb-4">
-              Under the Hood
+          <div className="max-w-3xl mx-auto text-center bg-gradient-to-br from-indigo-600 to-purple-700 rounded-2xl p-12 text-white">
+            <h2 className="text-3xl font-bold mb-4">
+              Ready to Annotate Together?
             </h2>
-          </motion.div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 max-w-5xl mx-auto">
-            {[
-              {
-                title: "Animation System",
-                items: [
-                  "CSS Keyframe Animation",
-                  "Hardware-accelerated transforms",
-                  "Dynamic duration based on speed",
-                  "Will-change optimization",
-                ],
-              },
-              {
-                title: "Track Algorithm",
-                items: [
-                  "Screen divided into horizontal tracks",
-                  "Each track holds one danmaku at a time",
-                  "Timestamp-based occupancy tracking",
-                  "Fallback to random track if full",
-                ],
-              },
-              {
-                title: "Backend Integration",
-                items: [
-                  "Reuses existing Kanfa API",
-                  "Page-specific danmaku storage",
-                  "User authentication required",
-                  "No backend changes needed",
-                ],
-              },
-            ].map((section, i) => (
-              <motion.div
-                key={section.title}
-                className="p-6 rounded-xl bg-card border border-border"
-                initial={{ opacity: 0, y: 20 }}
-                whileInView={{ opacity: 1, y: 0 }}
-                viewport={{ once: true }}
-                transition={{ delay: i * 0.1 }}
-              >
-                <h3 className="font-semibold text-lg mb-4">{section.title}</h3>
-                <ul className="space-y-2">
-                  {section.items.map((item) => (
-                    <li
-                      key={item}
-                      className="flex items-center gap-2 text-sm text-muted-foreground"
-                    >
-                      <div className="w-1.5 h-1.5 rounded-full bg-primary" />
-                      {item}
-                    </li>
-                  ))}
-                </ul>
-              </motion.div>
-            ))}
+            <p className="text-indigo-100 mb-8 max-w-xl mx-auto">
+              Start using Paper Danmaku for your research group, reading club, or classroom today.
+            </p>
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
+              <Button size="lg" variant="secondary" className="gap-2">
+                <Github className="w-4 h-4" />
+                View on GitHub
+              </Button>
+              <Button size="lg" variant="outline" className="bg-transparent border-white text-white hover:bg-white/10 gap-2">
+                <BookOpen className="w-4 h-4" />
+                Read the Docs
+              </Button>
+            </div>
           </div>
         </div>
       </section>
 
       {/* Footer */}
-      <footer className="py-12 border-t border-border">
+      <footer className="py-8 border-t border-slate-200 dark:border-slate-800">
         <div className="container">
           <div className="flex flex-col md:flex-row items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2 rounded-lg bg-primary/10">
-                <Sparkles className="w-4 h-4 text-primary" />
+            <div className="flex items-center gap-2">
+              <div className="w-6 h-6 bg-gradient-to-br from-indigo-500 to-purple-600 rounded flex items-center justify-center">
+                <MessageSquare className="w-3 h-3 text-white" />
               </div>
-              <span className="font-semibold">Danmaku Component Showcase</span>
+              <span className="text-sm text-slate-600 dark:text-slate-400">
+                Paper Danmaku - Collaborative Research Annotation
+              </span>
             </div>
-            <p className="text-sm text-muted-foreground">
-              Built for collaborative research paper reading
-            </p>
-            <div className="flex items-center gap-4">
-              <Button variant="ghost" size="sm" className="gap-2">
-                <Github className="w-4 h-4" />
+            <div className="flex items-center gap-6">
+              <a href="#" className="text-sm text-slate-500 hover:text-slate-700 dark:hover:text-slate-300">
                 GitHub
-              </Button>
-              <Button variant="ghost" size="sm" className="gap-2">
-                <BookOpen className="w-4 h-4" />
-                Docs
-              </Button>
+              </a>
+              <a href="#" className="text-sm text-slate-500 hover:text-slate-700 dark:hover:text-slate-300">
+                Documentation
+              </a>
             </div>
           </div>
         </div>
       </footer>
+    </div>
+  );
+}
+
+// Feature Card Component
+function FeatureCard({
+  icon: Icon,
+  title,
+  description,
+  color,
+}: {
+  icon: React.ElementType;
+  title: string;
+  description: string;
+  color: string;
+}) {
+  const colorClasses: Record<string, string> = {
+    indigo: "bg-indigo-100 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400",
+    purple: "bg-purple-100 dark:bg-purple-900/30 text-purple-600 dark:text-purple-400",
+    pink: "bg-pink-100 dark:bg-pink-900/30 text-pink-600 dark:text-pink-400",
+    cyan: "bg-cyan-100 dark:bg-cyan-900/30 text-cyan-600 dark:text-cyan-400",
+    green: "bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400",
+    amber: "bg-amber-100 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400",
+  };
+
+  return (
+    <div className="bg-white dark:bg-slate-800 rounded-xl p-6 border border-slate-200 dark:border-slate-700 hover:shadow-lg transition-shadow">
+      <div className={`w-12 h-12 rounded-lg ${colorClasses[color]} flex items-center justify-center mb-4`}>
+        <Icon className="w-6 h-6" />
+      </div>
+      <h3 className="font-semibold text-slate-900 dark:text-white mb-2">{title}</h3>
+      <p className="text-sm text-slate-600 dark:text-slate-400">{description}</p>
+    </div>
+  );
+}
+
+// Step Card Component
+function StepCard({
+  number,
+  title,
+  description,
+}: {
+  number: number;
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="text-center">
+      <div className="w-12 h-12 rounded-full bg-indigo-600 text-white text-xl font-bold flex items-center justify-center mx-auto mb-4">
+        {number}
+      </div>
+      <h3 className="font-semibold text-slate-900 dark:text-white mb-2">{title}</h3>
+      <p className="text-sm text-slate-600 dark:text-slate-400">{description}</p>
     </div>
   );
 }
