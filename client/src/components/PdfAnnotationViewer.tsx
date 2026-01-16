@@ -163,58 +163,57 @@ export function PdfAnnotationViewer({
     setScale((prevScale) => Math.max(0.5, Math.min(prevScale + delta, 1.5)));
   }, []);
 
-  // Handle text selection from PDF
-  useEffect(() => {
+  // Handle text selection from PDF - using mouseup event on container
+  const handleTextSelection = useCallback(() => {
     if (!isCreatingMode || selectionMode !== "text") return;
 
-    const handleSelectionChange = () => {
-      const selection = window.getSelection();
-      if (!selection || selection.isCollapsed) return;
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed) return;
 
-      const selectedText = selection.toString().trim();
-      if (!selectedText || selectedText.length < 2) return;
+    const selectedText = selection.toString().trim();
+    if (!selectedText || selectedText.length < 2) return;
 
-      // Get the selection range
-      const range = selection.getRangeAt(0);
-      const rects = range.getClientRects();
-      
-      if (rects.length === 0 || !containerRef.current) return;
+    // Get the selection range
+    const range = selection.getRangeAt(0);
+    const rects = range.getClientRects();
+    
+    if (rects.length === 0 || !containerRef.current) return;
 
-      const containerRect = containerRef.current.getBoundingClientRect();
-      
-      // Calculate bounding box of all rects
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      
-      for (let i = 0; i < rects.length; i++) {
-        const rect = rects[i];
-        minX = Math.min(minX, rect.left - containerRect.left);
-        minY = Math.min(minY, rect.top - containerRect.top);
-        maxX = Math.max(maxX, rect.right - containerRect.left);
-        maxY = Math.max(maxY, rect.bottom - containerRect.top);
-      }
+    const containerRect = containerRef.current.getBoundingClientRect();
+    
+    // Calculate bounding box of all rects
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    
+    for (let i = 0; i < rects.length; i++) {
+      const rect = rects[i];
+      minX = Math.min(minX, rect.left - containerRect.left);
+      minY = Math.min(minY, rect.top - containerRect.top);
+      maxX = Math.max(maxX, rect.right - containerRect.left);
+      maxY = Math.max(maxY, rect.bottom - containerRect.top);
+    }
 
-      // Convert to unscaled coordinates
-      const highlight = {
-        x: minX / scale,
-        y: minY / scale,
-        width: (maxX - minX) / scale,
-        height: (maxY - minY) / scale,
-        selectedText,
-      };
-
-      if (highlight.width > 5 && highlight.height > 5) {
-        setPendingHighlight(highlight);
-      }
+    // Convert to unscaled coordinates
+    const highlight = {
+      x: minX / scale,
+      y: minY / scale,
+      width: (maxX - minX) / scale,
+      height: (maxY - minY) / scale,
+      selectedText,
     };
 
-    document.addEventListener("mouseup", handleSelectionChange);
-    return () => document.removeEventListener("mouseup", handleSelectionChange);
+    if (highlight.width > 5 && highlight.height > 5) {
+      setPendingHighlight(highlight);
+    }
   }, [isCreatingMode, selectionMode, scale]);
 
   // Handle mouse events for drawing selection (region mode)
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
       if (!isCreatingMode || selectionMode !== "region" || !containerRef.current) return;
+      
+      // Don't start drawing if clicking on an annotation
+      const target = e.target as HTMLElement;
+      if (target.closest('.annotation-group') || target.closest('[data-annotation]')) return;
 
       const rect = containerRef.current.getBoundingClientRect();
       const x = (e.clientX - rect.left) / scale;
@@ -241,6 +240,9 @@ export function PdfAnnotationViewer({
   );
 
   const handleMouseUp = useCallback(() => {
+    // Handle text selection first
+    handleTextSelection();
+    
     if (!isDrawing || !drawStart || !drawCurrent) {
       setIsDrawing(false);
       return;
@@ -264,7 +266,7 @@ export function PdfAnnotationViewer({
     setIsDrawing(false);
     setDrawStart(null);
     setDrawCurrent(null);
-  }, [isDrawing, drawStart, drawCurrent]);
+  }, [isDrawing, drawStart, drawCurrent, handleTextSelection]);
 
   // Add annotation handler
   const handleAddAnnotation = useCallback(
@@ -282,18 +284,18 @@ export function PdfAnnotationViewer({
     []
   );
 
-  // Delete annotation handler
+  // Delete annotation handler - stable reference
   const handleDeleteAnnotation = useCallback((id: string) => {
     setAnnotations((prev) => prev.filter((a) => a.id !== id));
-    setSelectedAnnotationId(null);
+    setSelectedAnnotationId((prevSelected) => prevSelected === id ? null : prevSelected);
   }, []);
 
-  // Update annotation position handler (for drag)
+  // Update annotation position handler (for drag) - stable reference with functional update
   const handlePositionChange = useCallback(
     (id: string, newPosition: { x: number; y: number }) => {
       setAnnotations((prev) =>
         prev.map((a) =>
-          a.id === id ? { ...a, position: newPosition } : a
+          a.id === id ? { ...a, position: { ...newPosition } } : a
         )
       );
     },
@@ -444,9 +446,15 @@ export function PdfAnnotationViewer({
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
-            onMouseLeave={handleMouseUp}
+            onMouseLeave={() => {
+              if (isDrawing) {
+                setIsDrawing(false);
+                setDrawStart(null);
+                setDrawCurrent(null);
+              }
+            }}
           >
-            <div ref={pageRef}>
+            <div ref={pageRef} className="pdf-container">
               <Document
                 file={pdfUrl}
                 onLoadSuccess={onDocumentLoadSuccess}
@@ -475,13 +483,17 @@ export function PdfAnnotationViewer({
               </Document>
             </div>
 
-            {/* SVG Overlay for Annotations */}
+            {/* SVG Overlay for Annotations - positioned to not block text selection */}
             {pageSize.width > 0 && (
               <svg
-                className="absolute top-0 left-0 pointer-events-none"
+                className="absolute top-0 left-0"
                 width={pageSize.width * scale}
                 height={pageSize.height * scale}
-                style={{ overflow: "visible" }}
+                style={{ 
+                  overflow: "visible", 
+                  pointerEvents: "none",
+                  zIndex: 10,
+                }}
               >
                 {/* Render existing annotations */}
                 {pageAnnotations.map((annotation) => (

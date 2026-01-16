@@ -44,7 +44,14 @@ export function AnnotationDanmaku({
   const contentRef = useRef<HTMLDivElement>(null);
   const [isHovered, setIsHovered] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
-  const dragStartRef = useRef<{ x: number; y: number; posX: number; posY: number } | null>(null);
+  
+  // Store drag state in refs to avoid stale closure issues
+  const dragStateRef = useRef<{
+    startX: number;
+    startY: number;
+    startPosX: number;
+    startPosY: number;
+  } | null>(null);
 
   useEffect(() => {
     if (annotation.latex && contentRef.current) {
@@ -76,58 +83,70 @@ export function AnnotationDanmaku({
     y: scaledHighlight.y + scaledHighlight.height / 2,
   };
 
+  // Start drag - store initial position
   const handleDragStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
     
-    dragStartRef.current = {
-      x: e.clientX,
-      y: e.clientY,
-      posX: annotation.position.x,
-      posY: annotation.position.y,
+    dragStateRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      startPosX: annotation.position.x,
+      startPosY: annotation.position.y,
     };
     setIsDragging(true);
   }, [annotation.position.x, annotation.position.y]);
 
+  // Global mouse move and up handlers
   useEffect(() => {
     if (!isDragging) return;
 
     const handleMouseMove = (e: MouseEvent) => {
-      if (!dragStartRef.current || !onPositionChange) return;
+      if (!dragStateRef.current || !onPositionChange) return;
       
-      const deltaX = (e.clientX - dragStartRef.current.x) / scale;
-      const deltaY = (e.clientY - dragStartRef.current.y) / scale;
+      const deltaX = (e.clientX - dragStateRef.current.startX) / scale;
+      const deltaY = (e.clientY - dragStateRef.current.startY) / scale;
       
-      const newX = dragStartRef.current.posX + deltaX;
-      const newY = dragStartRef.current.posY + deltaY;
+      const newX = Math.max(0, dragStateRef.current.startPosX + deltaX);
+      const newY = Math.max(0, dragStateRef.current.startPosY + deltaY);
       
       onPositionChange(annotation.id, { x: newX, y: newY });
     };
 
     const handleMouseUp = () => {
       setIsDragging(false);
-      dragStartRef.current = null;
+      dragStateRef.current = null;
     };
 
-    document.addEventListener("mousemove", handleMouseMove, true);
-    document.addEventListener("mouseup", handleMouseUp, true);
+    // Use capture phase and attach to window for reliability
+    window.addEventListener("mousemove", handleMouseMove, { capture: true });
+    window.addEventListener("mouseup", handleMouseUp, { capture: true });
 
     return () => {
-      document.removeEventListener("mousemove", handleMouseMove, true);
-      document.removeEventListener("mouseup", handleMouseUp, true);
+      window.removeEventListener("mousemove", handleMouseMove, { capture: true });
+      window.removeEventListener("mouseup", handleMouseUp, { capture: true });
     };
   }, [isDragging, scale, annotation.id, onPositionChange]);
 
   const handleDelete = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    onDelete?.(annotation.id);
+    if (onDelete) {
+      onDelete(annotation.id);
+    }
   }, [annotation.id, onDelete]);
+
+  const handleSelect = useCallback(() => {
+    if (!isDragging && onSelect) {
+      onSelect(annotation.id);
+    }
+  }, [isDragging, onSelect, annotation.id]);
 
   const showControls = isHovered || isSelected || isDragging;
 
   return (
-    <g className="annotation-group" style={{ pointerEvents: "auto" }}>
+    <g className="annotation-group" data-annotation={annotation.id}>
+      {/* Highlight rectangle */}
       <rect
         x={scaledHighlight.x}
         y={scaledHighlight.y}
@@ -142,11 +161,12 @@ export function AnnotationDanmaku({
         ry={2}
         className="cursor-pointer transition-all duration-200"
         style={{ pointerEvents: "auto" }}
-        onClick={() => onSelect?.(annotation.id)}
+        onClick={handleSelect}
         onMouseEnter={() => setIsHovered(true)}
         onMouseLeave={() => setIsHovered(false)}
       />
 
+      {/* Connection line */}
       <line
         x1={highlightCenter.x}
         y1={highlightCenter.y}
@@ -160,19 +180,20 @@ export function AnnotationDanmaku({
         style={{ pointerEvents: "none" }}
       />
 
+      {/* Annotation box using foreignObject */}
       <foreignObject
         x={scaledPosition.x - 120}
         y={scaledPosition.y - 20}
         width={260}
-        height={120}
-        style={{ overflow: "visible", pointerEvents: "auto" }}
+        height={140}
+        style={{ overflow: "visible" }}
       >
         <div
           className={`
             bg-white dark:bg-slate-800 rounded-lg shadow-lg border-2 p-2 relative
             transition-all duration-200
             ${isSelected ? "ring-2 ring-offset-2 ring-indigo-500" : ""}
-            ${isDragging ? "opacity-80 scale-105" : "cursor-pointer"}
+            ${isDragging ? "opacity-90 scale-[1.02]" : "cursor-pointer"}
           `}
           style={{
             borderColor: annotation.color,
@@ -180,10 +201,15 @@ export function AnnotationDanmaku({
               ? `0 4px 20px ${annotation.color}40`
               : "0 2px 8px rgba(0,0,0,0.1)",
             pointerEvents: "auto",
+            userSelect: "none",
           }}
-          onClick={() => !isDragging && onSelect?.(annotation.id)}
+          onClick={handleSelect}
           onMouseEnter={() => setIsHovered(true)}
-          onMouseLeave={() => !isDragging && setIsHovered(false)}
+          onMouseLeave={() => {
+            if (!isDragging) {
+              setIsHovered(false);
+            }
+          }}
         >
           {/* Delete button */}
           <button
@@ -192,11 +218,11 @@ export function AnnotationDanmaku({
               bg-red-500 hover:bg-red-600 text-white
               flex items-center justify-center
               shadow-md transition-all duration-200 z-20
-              ${showControls ? "opacity-100 scale-100" : "opacity-0 scale-75"}
+              ${showControls ? "opacity-100 scale-100" : "opacity-0 scale-75 pointer-events-none"}
             `}
             onClick={handleDelete}
+            onMouseDown={(e) => e.stopPropagation()}
             title="Delete annotation"
-            style={{ pointerEvents: showControls ? "auto" : "none" }}
           >
             <X className="w-3.5 h-3.5" />
           </button>
@@ -208,19 +234,19 @@ export function AnnotationDanmaku({
               bg-indigo-500 hover:bg-indigo-600 text-white
               flex items-center justify-center
               shadow-md transition-all duration-200 z-20
-              ${showControls ? "opacity-100 scale-100" : "opacity-0 scale-75"}
+              ${showControls ? "opacity-100 scale-100" : "opacity-0 scale-75 pointer-events-none"}
               ${isDragging ? "bg-indigo-700 scale-110" : ""}
             `}
             onMouseDown={handleDragStart}
             title="Drag to reposition"
             style={{ 
-              pointerEvents: showControls ? "auto" : "none",
               cursor: isDragging ? "grabbing" : "grab",
             }}
           >
             <Move className="w-3.5 h-3.5" />
           </div>
 
+          {/* User info */}
           <div className="flex items-center gap-1.5 mb-1">
             <div
               className="w-4 h-4 rounded-full flex items-center justify-center text-[8px] font-bold text-white flex-shrink-0"
@@ -244,6 +270,7 @@ export function AnnotationDanmaku({
             )}
           </div>
 
+          {/* Content */}
           {annotation.latex ? (
             <div
               ref={contentRef}

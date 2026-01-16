@@ -1,53 +1,94 @@
 /* Custom styles for PDF text layer to enable text selection */
 
+.pdf-container {
+  position: relative;
+}
+
 .pdf-page-with-text {
   position: relative;
 }
 
-/* Text layer styling */
-.pdf-page-with-text .react-pdf__Page__textContent {
+/* Ensure the page wrapper has proper positioning */
+.pdf-page-with-text .react-pdf__Page {
+  position: relative;
+}
+
+/* Text layer styling - CRITICAL for text selection */
+.pdf-page-with-text .react-pdf__Page__textContent,
+.react-pdf__Page__textContent {
   position: absolute !important;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  overflow: hidden;
-  opacity: 1;
-  line-height: 1;
-  user-select: text;
-  pointer-events: auto;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  overflow: visible !important;
+  opacity: 1 !important;
+  line-height: 1 !important;
+  user-select: text !important;
+  -webkit-user-select: text !important;
+  -moz-user-select: text !important;
+  -ms-user-select: text !important;
+  pointer-events: auto !important;
+  z-index: 2 !important;
 }
 
-.pdf-page-with-text .react-pdf__Page__textContent span {
-  color: transparent;
-  position: absolute;
-  white-space: pre;
-  transform-origin: 0% 0%;
-  cursor: text;
+.pdf-page-with-text .react-pdf__Page__textContent span,
+.react-pdf__Page__textContent span {
+  color: transparent !important;
+  position: absolute !important;
+  white-space: pre !important;
+  transform-origin: 0% 0% !important;
+  cursor: text !important;
+  pointer-events: auto !important;
+  user-select: text !important;
+  -webkit-user-select: text !important;
 }
 
-/* Highlight selected text */
-.pdf-page-with-text .react-pdf__Page__textContent span::selection {
-  background-color: rgba(99, 102, 241, 0.4);
-  color: transparent;
+/* Highlight selected text with visible background */
+.pdf-page-with-text .react-pdf__Page__textContent span::selection,
+.react-pdf__Page__textContent span::selection {
+  background-color: rgba(99, 102, 241, 0.5) !important;
+  color: transparent !important;
+}
+
+.pdf-page-with-text .react-pdf__Page__textContent span::-moz-selection,
+.react-pdf__Page__textContent span::-moz-selection {
+  background-color: rgba(99, 102, 241, 0.5) !important;
+  color: transparent !important;
 }
 
 /* Annotation layer styling */
-.pdf-page-with-text .react-pdf__Page__annotations {
+.pdf-page-with-text .react-pdf__Page__annotations,
+.react-pdf__Page__annotations {
   position: absolute !important;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  pointer-events: auto;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  pointer-events: auto !important;
+  z-index: 1 !important;
 }
 
-.pdf-page-with-text .react-pdf__Page__annotations a {
+.pdf-page-with-text .react-pdf__Page__annotations a,
+.react-pdf__Page__annotations a {
   color: #3b82f6;
   text-decoration: underline;
 }
 
-/* Canvas styling */
-.pdf-page-with-text .react-pdf__Page__canvas {
-  display: block;
+/* Canvas styling - ensure it's below the text layer */
+.pdf-page-with-text .react-pdf__Page__canvas,
+.react-pdf__Page__canvas {
+  display: block !important;
+  position: relative !important;
+  z-index: 0 !important;
+}
+
+/* Ensure the SVG overlay doesn't block text selection */
+.pdf-container svg {
+  pointer-events: none;
+}
+
+/* But allow pointer events on annotation elements */
+.pdf-container svg .annotation-group {
+  pointer-events: auto;
 }
