@@ -57,9 +57,9 @@ export default function Home() {
               Collaborative Research Tool
             </div>
             <h1 className="text-4xl md:text-5xl lg:text-6xl font-bold text-slate-900 dark:text-white mb-6 leading-tight">
-              Read Papers Together with{" "}
+              Read and Review Papers with{" "}
               <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-purple-600">
-                Danmaku Annotations
+                Others and AI Agent
               </span>
             </h1>
             <p className="text-lg text-slate-600 dark:text-slate-300 mb-8 max-w-2xl mx-auto">

@@ -5,10 +5,14 @@
  * The design is backend-agnostic - you can implement this interface with any AI provider
  * (OpenAI, Anthropic, local models, etc.)
  * 
+ * KEY DESIGN: The AI must specify EXACT text from the paper that should be annotated.
+ * This allows the frontend to search for and highlight the exact text in the PDF.
+ * 
  * USAGE FOR BACKEND DEVELOPERS:
  * 1. Send paper content + this API structure to your AI model
  * 2. Parse the AI response into AnnotationSuggestion[] format
  * 3. Return the suggestions to the frontend
+ * 4. Frontend will search for exactQuote in the PDF and highlight it
  */
 
 // ============================================================================
@@ -75,8 +79,17 @@ export interface AnnotationSuggestion {
   id: string;
   /** Type of annotation */
   type: AnnotationType;
-  /** The text/region this annotation refers to */
-  targetText: string;
+  /** 
+   * CRITICAL: The EXACT quote from the paper that should be highlighted.
+   * This must be a verbatim copy of text from the paper content.
+   * The frontend will search for this exact string to find the location.
+   */
+  exactQuote: string;
+  /**
+   * A shorter key phrase from exactQuote for fallback matching.
+   * Should be 3-10 words that uniquely identify the location.
+   */
+  keyPhrase: string;
   /** The annotation content (can include LaTeX) */
   content: string;
   /** LaTeX formula if applicable */
@@ -87,7 +100,9 @@ export interface AnnotationSuggestion {
   reasoning?: string;
   /** Suggested color for the annotation */
   suggestedColor?: string;
-  /** Approximate position hint (percentage from top of page) */
+  /** Legacy field - kept for compatibility but not used for positioning */
+  targetText?: string;
+  /** Legacy field - kept for compatibility but not used for positioning */
   positionHint?: number;
 }
 
@@ -163,55 +178,67 @@ export interface IAIService {
 }
 
 // ============================================================================
-// PROMPT TEMPLATES
+// PROMPT TEMPLATES - REDESIGNED FOR EXACT TEXT MATCHING
 // ============================================================================
 
 export const SYSTEM_PROMPT = `You are an AI research assistant helping readers understand academic papers. Your task is to analyze the paper content and suggest helpful annotations.
 
+CRITICAL INSTRUCTION: For each annotation, you MUST provide the EXACT text from the paper that should be highlighted. This text will be used to locate and highlight the specific region in the PDF.
+
 For each annotation, you should:
 1. Identify key elements (equations, methods, conclusions, definitions, results)
-2. Provide clear, concise explanations
-3. Use LaTeX for mathematical expressions when appropriate
-4. Rate your confidence in each suggestion
+2. Copy the EXACT text/sentence from the paper that should be annotated (verbatim, character-for-character)
+3. Provide a shorter key phrase (3-10 words) from that text for fallback matching
+4. Provide clear, concise explanations
+5. Use LaTeX for mathematical expressions when appropriate
+6. Rate your confidence in each suggestion
 
 Output your suggestions in the following JSON format:
 {
   "suggestions": [
     {
-      "id": "unique-id",
+      "id": "unique-id-1",
       "type": "equation|conclusion|method|definition|result|insight|question",
-      "targetText": "the exact text or equation being annotated",
+      "exactQuote": "THE EXACT SENTENCE OR PHRASE FROM THE PAPER - MUST BE VERBATIM",
+      "keyPhrase": "3-10 word key phrase from the quote",
       "content": "your annotation/explanation",
       "latex": "optional LaTeX formula",
       "confidence": 0.0-1.0,
-      "reasoning": "why this annotation is helpful",
-      "positionHint": 0.0-1.0 (position from top of page)
+      "reasoning": "why this annotation is helpful"
     }
   ]
-}`;
+}
+
+IMPORTANT RULES:
+1. exactQuote MUST be copied EXACTLY from the paper text - do not paraphrase or modify
+2. exactQuote should be a complete sentence or meaningful phrase (not too short, not too long)
+3. keyPhrase should be a distinctive part of exactQuote that uniquely identifies the location
+4. Do not include line breaks or special formatting in exactQuote
+5. If the text contains mathematical notation, include it as it appears in the text`;
 
 export function buildUserPrompt(request: AIAnnotationRequest): string {
   const { paper, annotationTypes, customPrompt, language, maxSuggestions } = request;
   
   let prompt = `Please analyze the following paper content and generate annotation suggestions.
 
+IMPORTANT: For each suggestion, you MUST copy the EXACT text from the paper that should be highlighted. The "exactQuote" field must contain verbatim text from the paper content below.
+
 Paper Information:
 - Title: ${paper.title || 'Unknown'}
 - Authors: ${paper.authors?.join(', ') || 'Unknown'}
 - Page: ${paper.pageNumber} of ${paper.totalPages}
 
-Page Content:
-"""
+=== PAGE CONTENT START ===
 ${paper.pageText}
-"""
+=== PAGE CONTENT END ===
 
 Annotation Types to Focus On: ${annotationTypes.join(', ')}
 Maximum Suggestions: ${maxSuggestions || 5}
-Language: ${language === 'zh' ? 'Chinese' : language === 'en' ? 'English' : 'Same as paper'}
+Language for explanations: ${language === 'zh' ? 'Chinese' : language === 'en' ? 'English' : 'Same as paper'}
 `;
 
   if (paper.existingAnnotations && paper.existingAnnotations.length > 0) {
-    prompt += `\nExisting Annotations (avoid duplicating):
+    prompt += `\nExisting Annotations (avoid duplicating these topics):
 ${paper.existingAnnotations.map(a => `- [${a.type}] ${a.text}`).join('\n')}
 `;
   }
@@ -220,7 +247,11 @@ ${paper.existingAnnotations.map(a => `- [${a.type}] ${a.text}`).join('\n')}
     prompt += `\nAdditional Instructions: ${customPrompt}`;
   }
 
-  prompt += `\n\nPlease provide your annotation suggestions in the JSON format specified.`;
+  prompt += `
+
+REMINDER: The "exactQuote" field must contain text that appears EXACTLY in the PAGE CONTENT above. The frontend will search for this exact string to highlight it in the PDF.
+
+Please provide your annotation suggestions in the JSON format specified.`;
 
   return prompt;
 }
@@ -390,6 +421,15 @@ export class OpenAIService implements IAIService {
           const parsed = JSON.parse(jsonMatch[0]);
           if (parsed.suggestions) {
             for (const suggestion of parsed.suggestions) {
+              // Ensure backward compatibility
+              if (!suggestion.exactQuote && suggestion.targetText) {
+                suggestion.exactQuote = suggestion.targetText;
+              }
+              if (!suggestion.keyPhrase && suggestion.exactQuote) {
+                // Extract first 5-10 words as key phrase
+                const words = suggestion.exactQuote.split(/\s+/).slice(0, 8);
+                suggestion.keyPhrase = words.join(' ');
+              }
               onChunk({ type: 'suggestion', suggestion });
             }
           }
@@ -403,6 +443,69 @@ export class OpenAIService implements IAIService {
       onChunk({ type: 'error', error: `Stream error: ${error}` });
     }
   }
+}
+
+// ============================================================================
+// TEXT MATCHING UTILITIES
+// ============================================================================
+
+/**
+ * Find the position of a text quote in the PDF page text.
+ * Returns the start and end character indices, or null if not found.
+ */
+export function findTextInPage(pageText: string, quote: string): { start: number; end: number } | null {
+  // Normalize whitespace for matching
+  const normalizedPage = pageText.replace(/\s+/g, ' ').toLowerCase();
+  const normalizedQuote = quote.replace(/\s+/g, ' ').toLowerCase();
+  
+  const index = normalizedPage.indexOf(normalizedQuote);
+  if (index !== -1) {
+    return { start: index, end: index + normalizedQuote.length };
+  }
+  
+  return null;
+}
+
+/**
+ * Find text using fuzzy matching when exact match fails.
+ * Returns the best matching substring and its position.
+ */
+export function fuzzyFindTextInPage(
+  pageText: string, 
+  quote: string,
+  keyPhrase?: string
+): { text: string; start: number; end: number; confidence: number } | null {
+  // First try exact match
+  const exactMatch = findTextInPage(pageText, quote);
+  if (exactMatch) {
+    return { text: quote, ...exactMatch, confidence: 1.0 };
+  }
+  
+  // Try key phrase if provided
+  if (keyPhrase) {
+    const keyMatch = findTextInPage(pageText, keyPhrase);
+    if (keyMatch) {
+      return { text: keyPhrase, ...keyMatch, confidence: 0.8 };
+    }
+  }
+  
+  // Try partial matching - find the longest matching substring
+  const words = quote.split(/\s+/);
+  for (let len = words.length; len >= 3; len--) {
+    for (let start = 0; start <= words.length - len; start++) {
+      const partial = words.slice(start, start + len).join(' ');
+      const match = findTextInPage(pageText, partial);
+      if (match) {
+        return { 
+          text: partial, 
+          ...match, 
+          confidence: len / words.length * 0.7 
+        };
+      }
+    }
+  }
+  
+  return null;
 }
 
 // ============================================================================

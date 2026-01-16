@@ -645,6 +645,7 @@ export function PdfAnnotationViewer({
           paperContent={paperContent}
           onAddAnnotation={handleAddAnnotation}
           existingAnnotations={annotations}
+          pageTextContent={pageText}
         />
       </div>
       

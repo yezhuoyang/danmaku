@@ -1,6 +1,5 @@
 import { useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -19,6 +18,8 @@ import {
   Lightbulb,
   HelpCircle,
   BookOpen,
+  MapPin,
+  Search,
 } from "lucide-react";
 import {
   aiService,
@@ -27,6 +28,7 @@ import {
   AnnotationType,
   PaperContent,
   StreamingChunk,
+  fuzzyFindTextInPage,
 } from "@/lib/ai-service";
 import { AISettingsPanel } from "./AISettingsPanel";
 import { Annotation, ANNOTATION_COLORS } from "@/components/annotations/AnnotationDanmaku";
@@ -35,6 +37,10 @@ interface AICompanionPanelProps {
   paperContent: PaperContent;
   onAddAnnotation: (annotation: Omit<Annotation, 'id' | 'timestamp'>) => void;
   existingAnnotations: Annotation[];
+  /** Callback to search for text in the PDF and get its bounding box */
+  onSearchTextInPdf?: (text: string) => { x: number; y: number; width: number; height: number } | null;
+  /** The current page's text content for text matching */
+  pageTextContent?: string;
 }
 
 const ANNOTATION_TYPE_CONFIG: Record<AnnotationType, { icon: React.ElementType; label: string; color: string }> = {
@@ -47,10 +53,23 @@ const ANNOTATION_TYPE_CONFIG: Record<AnnotationType, { icon: React.ElementType; 
   question: { icon: HelpCircle, label: 'Questions', color: '#EC4899' },
 };
 
+// Map annotation type to highlight region type
+const TYPE_TO_REGION: Record<AnnotationType, 'text' | 'equation' | 'figure' | 'table'> = {
+  equation: 'equation',
+  conclusion: 'text',
+  method: 'text',
+  definition: 'text',
+  result: 'text',
+  insight: 'text',
+  question: 'text',
+};
+
 export function AICompanionPanel({
   paperContent,
   onAddAnnotation,
   existingAnnotations,
+  onSearchTextInPdf,
+  pageTextContent,
 }: AICompanionPanelProps) {
   const [isConfigured, setIsConfigured] = useState(aiService.isConfigured());
   const [isGenerating, setIsGenerating] = useState(false);
@@ -58,6 +77,9 @@ export function AICompanionPanel({
   const [suggestions, setSuggestions] = useState<AnnotationSuggestion[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [addedIds, setAddedIds] = useState<Set<string>>(new Set());
+  
+  // Track text match status for each suggestion
+  const [matchStatus, setMatchStatus] = useState<Record<string, { found: boolean; matchedText?: string; confidence?: number }>>({});
   
   // Annotation type selection
   const [selectedTypes, setSelectedTypes] = useState<AnnotationType[]>([
@@ -76,6 +98,62 @@ export function AICompanionPanel({
     );
   };
 
+  // Find text position in the page
+  const findTextPosition = useCallback((suggestion: AnnotationSuggestion): { 
+    found: boolean; 
+    region?: { x: number; y: number; width: number; height: number };
+    matchedText?: string;
+    confidence?: number;
+  } => {
+    const textToSearch = suggestion.exactQuote || suggestion.targetText || '';
+    const keyPhrase = suggestion.keyPhrase;
+    
+    // First try using the PDF search callback if available
+    if (onSearchTextInPdf && textToSearch) {
+      const result = onSearchTextInPdf(textToSearch);
+      if (result) {
+        return { found: true, region: result, matchedText: textToSearch, confidence: 1.0 };
+      }
+      // Try key phrase
+      if (keyPhrase) {
+        const keyResult = onSearchTextInPdf(keyPhrase);
+        if (keyResult) {
+          return { found: true, region: keyResult, matchedText: keyPhrase, confidence: 0.8 };
+        }
+      }
+    }
+    
+    // Fall back to text content matching
+    const searchText = pageTextContent || paperContent.pageText;
+    if (searchText && textToSearch) {
+      const match = fuzzyFindTextInPage(searchText, textToSearch, keyPhrase);
+      if (match) {
+        // Estimate position based on character position in text
+        // This is a rough approximation - actual PDF coordinates would be better
+        const totalChars = searchText.length;
+        const relativePosition = match.start / totalChars;
+        
+        // Estimate Y position based on relative text position
+        // Assuming page height of ~800px and text area from y=100 to y=700
+        const estimatedY = 100 + relativePosition * 600;
+        
+        return {
+          found: true,
+          region: {
+            x: 100,
+            y: Math.max(80, Math.min(700, estimatedY)),
+            width: Math.min(400, match.text.length * 6),
+            height: 25,
+          },
+          matchedText: match.text,
+          confidence: match.confidence,
+        };
+      }
+    }
+    
+    return { found: false };
+  }, [onSearchTextInPdf, pageTextContent, paperContent.pageText]);
+
   const handleGenerate = useCallback(async () => {
     if (!aiService.isConfigured()) {
       setError('Please configure your AI settings first');
@@ -91,6 +169,7 @@ export function AICompanionPanel({
     setError(null);
     setStreamingContent('');
     setSuggestions([]);
+    setMatchStatus({});
 
     const request: AIAnnotationRequest = {
       paper: {
@@ -108,14 +187,29 @@ export function AICompanionPanel({
     };
 
     try {
+      console.log('Starting AI annotation generation with request:', request);
       await aiService.generateAnnotationsStream(request, (chunk: StreamingChunk) => {
+        console.log('Received chunk:', chunk.type, chunk);
         switch (chunk.type) {
           case 'content':
             setStreamingContent(prev => prev + (chunk.content || ''));
             break;
           case 'suggestion':
+            console.log('Received suggestion:', chunk.suggestion);
             if (chunk.suggestion) {
-              setSuggestions(prev => [...prev, chunk.suggestion!]);
+              const suggestion = chunk.suggestion;
+              setSuggestions(prev => [...prev, suggestion]);
+              
+              // Check if we can find the text in the page
+              const matchResult = findTextPosition(suggestion);
+              setMatchStatus(prev => ({
+                ...prev,
+                [suggestion.id]: {
+                  found: matchResult.found,
+                  matchedText: matchResult.matchedText,
+                  confidence: matchResult.confidence,
+                },
+              }));
             }
             break;
           case 'error':
@@ -131,17 +225,52 @@ export function AICompanionPanel({
     } finally {
       setIsGenerating(false);
     }
-  }, [paperContent, existingAnnotations, selectedTypes, customPrompt, showCustomPrompt]);
+  }, [paperContent, existingAnnotations, selectedTypes, customPrompt, showCustomPrompt, findTextPosition]);
 
   const handleAddSuggestion = (suggestion: AnnotationSuggestion) => {
     // Map suggestion to annotation format
     const typeConfig = ANNOTATION_TYPE_CONFIG[suggestion.type];
     const color = suggestion.suggestedColor || typeConfig.color;
     
-    // Calculate position based on positionHint
-    const positionY = suggestion.positionHint 
-      ? suggestion.positionHint * 800 // Approximate page height
-      : 100 + Math.random() * 400;
+    // Find the text position
+    const positionResult = findTextPosition(suggestion);
+    
+    let highlightRegion: Annotation['highlightRegion'];
+    let position: Annotation['position'];
+    
+    if (positionResult.found && positionResult.region) {
+      // Use the found position
+      highlightRegion = {
+        x: positionResult.region.x,
+        y: positionResult.region.y,
+        width: positionResult.region.width,
+        height: positionResult.region.height,
+        type: TYPE_TO_REGION[suggestion.type],
+        label: suggestion.type.charAt(0).toUpperCase() + suggestion.type.slice(1),
+      };
+      position = {
+        x: positionResult.region.x + positionResult.region.width + 20,
+        y: positionResult.region.y,
+      };
+    } else {
+      // Fallback to position hint or random position
+      const positionY = suggestion.positionHint 
+        ? suggestion.positionHint * 700 + 50
+        : 100 + Math.random() * 400;
+      
+      highlightRegion = {
+        x: 100,
+        y: positionY,
+        width: 350,
+        height: 25,
+        type: TYPE_TO_REGION[suggestion.type],
+        label: suggestion.type.charAt(0).toUpperCase() + suggestion.type.slice(1),
+      };
+      position = {
+        x: 470,
+        y: positionY,
+      };
+    }
 
     const annotation: Omit<Annotation, 'id' | 'timestamp'> = {
       text: suggestion.content,
@@ -150,18 +279,8 @@ export function AICompanionPanel({
       userName: 'AI Assistant',
       userAvatar: undefined,
       pageNumber: paperContent.pageNumber,
-      position: {
-        x: 500 + Math.random() * 100,
-        y: positionY,
-      },
-      highlightRegion: {
-        x: 50,
-        y: positionY - 20,
-        width: 400,
-        height: 30,
-        type: suggestion.type === 'equation' ? 'equation' : 'text',
-        label: suggestion.type.charAt(0).toUpperCase() + suggestion.type.slice(1),
-      },
+      position,
+      highlightRegion,
     };
 
     onAddAnnotation(annotation);
@@ -342,6 +461,7 @@ export function AICompanionPanel({
                 const config = ANNOTATION_TYPE_CONFIG[suggestion.type];
                 const Icon = config.icon;
                 const isAdded = addedIds.has(suggestion.id);
+                const match = matchStatus[suggestion.id];
                 
                 return (
                   <div
@@ -391,10 +511,38 @@ export function AICompanionPanel({
                       </Button>
                     </div>
 
-                    {/* Target Text */}
-                    {suggestion.targetText && (
-                      <div className="mb-2 px-2 py-1 bg-slate-100 dark:bg-slate-700 rounded text-xs text-slate-600 dark:text-slate-300 italic">
-                        "{suggestion.targetText.slice(0, 100)}{suggestion.targetText.length > 100 ? '...' : ''}"
+                    {/* Text Location Status */}
+                    {match && (
+                      <div className={`mb-2 px-2 py-1 rounded text-xs flex items-center gap-1 ${
+                        match.found 
+                          ? 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-300'
+                          : 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-300'
+                      }`}>
+                        {match.found ? (
+                          <>
+                            <MapPin className="w-3 h-3" />
+                            <span>Location found ({Math.round((match.confidence || 0) * 100)}% match)</span>
+                          </>
+                        ) : (
+                          <>
+                            <Search className="w-3 h-3" />
+                            <span>Text not found - will use approximate position</span>
+                          </>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Exact Quote - the text AI identified */}
+                    {(suggestion.exactQuote || suggestion.targetText) && (
+                      <div className="mb-2 px-2 py-1 bg-slate-100 dark:bg-slate-700 rounded text-xs text-slate-600 dark:text-slate-300">
+                        <div className="flex items-center gap-1 mb-1 text-slate-500">
+                          <Search className="w-3 h-3" />
+                          <span className="font-medium">Target text:</span>
+                        </div>
+                        <span className="italic">
+                          "{(suggestion.exactQuote || suggestion.targetText || '').slice(0, 150)}
+                          {(suggestion.exactQuote || suggestion.targetText || '').length > 150 ? '...' : ''}"
+                        </span>
                       </div>
                     )}
 
