@@ -16,7 +16,10 @@ import {
   DialogHeader,
   DialogTitle,
   DialogTrigger,
+  DialogPortal,
+  DialogOverlay,
 } from "@/components/ui/dialog";
+import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { Slider } from "@/components/ui/slider";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -34,6 +37,8 @@ import { AIProviderConfig, aiService, DEFAULT_CONFIG } from "@/lib/ai-service";
 interface AISettingsPanelProps {
   onConfigChange?: (config: AIProviderConfig) => void;
   trigger?: React.ReactNode;
+  /** Container element for the dialog portal (used in fullscreen mode) */
+  container?: HTMLElement | null;
 }
 
 const PROVIDERS = [
@@ -44,7 +49,7 @@ const PROVIDERS = [
 
 const STORAGE_KEY = 'ai-companion-config';
 
-export function AISettingsPanel({ onConfigChange, trigger }: AISettingsPanelProps) {
+export function AISettingsPanel({ onConfigChange, trigger, container }: AISettingsPanelProps) {
   const [open, setOpen] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -68,6 +73,12 @@ export function AISettingsPanel({ onConfigChange, trigger }: AISettingsPanelProp
         setConfig(prev => ({ ...prev, ...parsed }));
         if (parsed.apiKey) {
           aiService.configure(parsed);
+          // Ensure individual keys are also set for compatibility
+          localStorage.setItem('ai_api_key', parsed.apiKey);
+          localStorage.setItem('ai_model', parsed.model || 'gpt-4o-mini');
+          if (parsed.baseUrl) {
+            localStorage.setItem('ai_base_url', parsed.baseUrl);
+          }
         }
       } catch {
         // Ignore parse errors
@@ -91,13 +102,20 @@ export function AISettingsPanel({ onConfigChange, trigger }: AISettingsPanelProp
     // Save to localStorage (excluding sensitive data in production)
     const toSave = { ...config };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
-    
+
+    // Also save individual keys for compatibility with other components
+    localStorage.setItem('ai_api_key', config.apiKey);
+    localStorage.setItem('ai_model', config.model);
+    if (config.baseUrl) {
+      localStorage.setItem('ai_base_url', config.baseUrl);
+    }
+
     // Configure the service
     aiService.configure(config);
-    
+
     // Notify parent
     onConfigChange?.(config);
-    
+
     setOpen(false);
   };
 
@@ -125,7 +143,11 @@ export function AISettingsPanel({ onConfigChange, trigger }: AISettingsPanelProp
           </Button>
         )}
       </DialogTrigger>
-      <DialogContent className="sm:max-w-[500px] max-h-[90vh] flex flex-col">
+      <DialogPortal container={container}>
+        <DialogOverlay className="z-[100]" />
+        <DialogPrimitive.Content
+          className="bg-background data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed top-[50%] left-[50%] z-[100] grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border p-6 shadow-lg duration-200 sm:max-w-[500px] max-h-[90vh] flex flex-col"
+        >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Cpu className="w-5 h-5 text-indigo-500" />
@@ -309,7 +331,13 @@ export function AISettingsPanel({ onConfigChange, trigger }: AISettingsPanelProp
             Save Settings
           </Button>
         </div>
-      </DialogContent>
+        {/* Close button */}
+        <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm opacity-70 ring-offset-background transition-opacity hover:opacity-100 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:pointer-events-none data-[state=open]:bg-accent data-[state=open]:text-muted-foreground">
+          <XCircle className="h-4 w-4" />
+          <span className="sr-only">Close</span>
+        </DialogPrimitive.Close>
+        </DialogPrimitive.Content>
+      </DialogPortal>
     </Dialog>
   );
 }

@@ -190,10 +190,28 @@
       transform: translateX(-100%);
     }
   }
-  
+
   .danmaku-item {
     animation: danmaku-scroll linear forwards;
     will-change: transform;
+  }
+
+  /* Flowing Danmaku Animation (for paper detail page) */
+  /* Content is duplicated. Starts from right edge, moves left continuously. */
+  .danmaku-flow-track {
+    position: relative;
+    left: 100%; /* Start at right edge of container */
+    animation: danmaku-flow linear infinite;
+  }
+
+  @keyframes danmaku-flow {
+    from {
+      transform: translateX(0);
+    }
+    to {
+      /* Move left by: 50% of content (for seamless loop) + 100% of container (to go off left edge) */
+      transform: translateX(calc(-50% - 100vw));
+    }
   }
   
   /* Code block styling */
@@ -246,19 +264,25 @@
   .gradient-text {
     @apply bg-clip-text text-transparent bg-gradient-to-r from-primary to-purple-500;
   }
-  
+
   /* Glass effect */
   .glass {
     @apply bg-white/80 backdrop-blur-md;
   }
-  
+
   /* Subtle shadow */
   .shadow-soft {
     box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.08), 0 2px 8px -2px rgba(0, 0, 0, 0.04);
   }
-  
+
   /* Interactive hover */
   .hover-lift {
     @apply transition-transform duration-200 hover:-translate-y-0.5;
+  }
+
+  /* Break long words/text anywhere */
+  .overflow-wrap-anywhere {
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
 }

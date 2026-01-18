@@ -92,3 +92,38 @@
 .pdf-container svg .annotation-group {
   pointer-events: auto;
 }
+
+/* Sentence highlight layer styling */
+.sentence-highlight-layer {
+  pointer-events: none;
+}
+
+.sentence-group {
+  pointer-events: auto;
+}
+
+.sentence-group rect[fill="transparent"] {
+  cursor: pointer;
+}
+
+/* Smooth transitions for sentence highlights */
+.sentence-highlight-layer line,
+.sentence-highlight-layer rect {
+  transition: opacity 0.15s ease, stroke-width 0.15s ease;
+}
+
+/* Discussion panel animations */
+.sentence-discussion-panel {
+  animation: slideIn 0.2s ease-out;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateX(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
