@@ -246,6 +246,20 @@ db.exec(`
     completed_at INTEGER
   );
 
+  -- Notifications table (for social interactions)
+  CREATE TABLE IF NOT EXISTS notifications (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    type TEXT NOT NULL CHECK(type IN ('follow', 'reply', 'like', 'annotation', 'comment', 'ai_review', 'user_review')),
+    actor_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    target_type TEXT,              -- Type of target (paper, annotation, comment, etc.)
+    target_id TEXT,                -- ID of the target
+    target_title TEXT,             -- Title or preview text of the target
+    paper_id TEXT REFERENCES papers(id) ON DELETE CASCADE,
+    is_read INTEGER DEFAULT 0,     -- 0 = unread, 1 = read
+    created_at INTEGER DEFAULT (unixepoch())
+  );
+
   -- Create indexes for common queries
   CREATE INDEX IF NOT EXISTS idx_papers_arxiv_id ON papers(arxiv_id);
   CREATE INDEX IF NOT EXISTS idx_papers_content_hash ON papers(content_hash);
@@ -270,7 +284,23 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_quiz_sessions_paper_id ON quiz_sessions(paper_id);
   CREATE INDEX IF NOT EXISTS idx_quiz_sessions_user_id ON quiz_sessions(user_id);
   CREATE INDEX IF NOT EXISTS idx_quiz_sessions_history_id ON quiz_sessions(history_id);
+  CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
+  CREATE INDEX IF NOT EXISTS idx_notifications_actor_id ON notifications(actor_id);
+  CREATE INDEX IF NOT EXISTS idx_notifications_is_read ON notifications(user_id, is_read);
 `);
+
+// Migration: Add tags column to papers table if it doesn't exist
+try {
+  const papersTableInfo = db.prepare("PRAGMA table_info(papers)").all() as any[];
+  const papersColumns = papersTableInfo.map(col => col.name);
+
+  if (!papersColumns.includes('tags')) {
+    db.exec("ALTER TABLE papers ADD COLUMN tags TEXT DEFAULT '[]'");
+    console.log('Migration: Added tags column to papers');
+  }
+} catch (error) {
+  console.error('Papers migration error:', error);
+}
 
 // Migration: Add profile columns to users if they don't exist
 try {
@@ -361,14 +391,13 @@ try {
   console.error('Migration error:', error);
 }
 
-// Migration: Update likes table CHECK constraint to include 'necessary_background' and 'ai_session'
+// Migration: Update likes table CHECK constraint to include all target types
 try {
-  // Check if the current constraint includes 'ai_session' by trying to insert and rollback
   const testStmt = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='likes'");
   const tableSchema = testStmt.get() as { sql: string } | undefined;
 
-  if (tableSchema && !tableSchema.sql.includes('ai_session')) {
-    console.log('Migration: Updating likes table to include ai_session in CHECK constraint...');
+  if (tableSchema && !tableSchema.sql.includes('challenge_problem')) {
+    console.log('Migration: Updating likes table to include challenge_problem in CHECK constraint...');
 
     // SQLite doesn't support ALTER TABLE to modify constraints, so we need to recreate the table
     db.exec(`
@@ -376,7 +405,7 @@ try {
       CREATE TABLE IF NOT EXISTS likes_new (
         id TEXT PRIMARY KEY,
         user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        target_type TEXT NOT NULL CHECK(target_type IN ('annotation', 'comment', 'user_review', 'ai_review', 'necessary_background', 'ai_session')),
+        target_type TEXT NOT NULL CHECK(target_type IN ('annotation', 'comment', 'user_review', 'ai_review', 'necessary_background', 'ai_session', 'challenge_problem', 'challenge_comment')),
         target_id TEXT NOT NULL,
         is_like INTEGER NOT NULL CHECK(is_like IN (0, 1)),
         created_at INTEGER DEFAULT (unixepoch()),
@@ -397,11 +426,153 @@ try {
       CREATE INDEX IF NOT EXISTS idx_likes_target ON likes(target_type, target_id);
     `);
 
-    console.log('Migration: Updated likes table with ai_session support');
+    console.log('Migration: Updated likes table with challenge_problem support');
   }
 } catch (error) {
   console.error('Likes table migration error:', error);
 }
+
+// Challenge Problems tables (Research Problems & Ideas feature with progress tree)
+db.exec(`
+  -- Challenge problems table (research questions and ideas with hierarchical progress tree)
+  CREATE TABLE IF NOT EXISTS challenge_problems (
+    id TEXT PRIMARY KEY,
+    -- Source information
+    paper_id TEXT REFERENCES papers(id) ON DELETE SET NULL,
+    history_id TEXT REFERENCES ai_agent_history(id) ON DELETE SET NULL,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+
+    -- Progress Tree: Hierarchical structure (self-referencing)
+    parent_id TEXT REFERENCES challenge_problems(id) ON DELETE CASCADE,
+    root_id TEXT REFERENCES challenge_problems(id) ON DELETE CASCADE,
+    depth INTEGER DEFAULT 0,
+    order_index INTEGER DEFAULT 0,
+
+    -- Problem details
+    type TEXT NOT NULL CHECK(type IN ('open_question', 'research_idea')),
+    status TEXT NOT NULL DEFAULT 'unsolved' CHECK(status IN ('unsolved', 'investigating', 'solved')),
+    title TEXT NOT NULL,
+    description TEXT,
+    context TEXT,
+
+    -- For research ideas (additional fields)
+    methodology TEXT,
+    expected_outcome TEXT,
+    feasibility TEXT CHECK(feasibility IN ('high', 'medium', 'low', NULL)),
+    novelty TEXT CHECK(novelty IN ('incremental', 'moderate', 'breakthrough', NULL)),
+    prerequisites TEXT,
+
+    -- Categorization
+    importance TEXT CHECK(importance IN ('high', 'medium', 'low', NULL)),
+    area TEXT,
+    tags TEXT DEFAULT '[]',
+
+    -- Solution tracking
+    solved_by TEXT REFERENCES users(id),
+    solved_at INTEGER,
+    solution_summary TEXT,
+
+    -- Engagement metrics
+    upvotes INTEGER DEFAULT 0,
+    downvotes INTEGER DEFAULT 0,
+    comment_count INTEGER DEFAULT 0,
+    child_count INTEGER DEFAULT 0,
+    linked_idea_count INTEGER DEFAULT 0,
+
+    -- Timestamps
+    created_at INTEGER DEFAULT (unixepoch()),
+    updated_at INTEGER DEFAULT (unixepoch())
+  );
+
+  -- Challenge idea links (connects research ideas to questions they address)
+  CREATE TABLE IF NOT EXISTS challenge_idea_links (
+    id TEXT PRIMARY KEY,
+    question_id TEXT NOT NULL REFERENCES challenge_problems(id) ON DELETE CASCADE,
+    idea_id TEXT NOT NULL REFERENCES challenge_problems(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    relationship TEXT DEFAULT 'addresses' CHECK(relationship IN ('addresses', 'partial', 'inspired_by')),
+    notes TEXT,
+    created_at INTEGER DEFAULT (unixepoch()),
+    UNIQUE(question_id, idea_id)
+  );
+
+  -- Challenge comments (discussions on problems)
+  CREATE TABLE IF NOT EXISTS challenge_comments (
+    id TEXT PRIMARY KEY,
+    problem_id TEXT NOT NULL REFERENCES challenge_problems(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    parent_id TEXT REFERENCES challenge_comments(id) ON DELETE CASCADE,
+    content TEXT NOT NULL,
+    upvotes INTEGER DEFAULT 0,
+    downvotes INTEGER DEFAULT 0,
+    created_at INTEGER DEFAULT (unixepoch()),
+    updated_at INTEGER DEFAULT (unixepoch())
+  );
+
+  -- Indexes for challenge problems
+  CREATE INDEX IF NOT EXISTS idx_challenge_problems_paper_id ON challenge_problems(paper_id);
+  CREATE INDEX IF NOT EXISTS idx_challenge_problems_user_id ON challenge_problems(user_id);
+  CREATE INDEX IF NOT EXISTS idx_challenge_problems_type ON challenge_problems(type);
+  CREATE INDEX IF NOT EXISTS idx_challenge_problems_status ON challenge_problems(status);
+  CREATE INDEX IF NOT EXISTS idx_challenge_problems_area ON challenge_problems(area);
+  CREATE INDEX IF NOT EXISTS idx_challenge_problems_created_at ON challenge_problems(created_at);
+  CREATE INDEX IF NOT EXISTS idx_challenge_problems_parent_id ON challenge_problems(parent_id);
+  CREATE INDEX IF NOT EXISTS idx_challenge_problems_root_id ON challenge_problems(root_id);
+
+  -- Indexes for idea links
+  CREATE INDEX IF NOT EXISTS idx_challenge_idea_links_question_id ON challenge_idea_links(question_id);
+  CREATE INDEX IF NOT EXISTS idx_challenge_idea_links_idea_id ON challenge_idea_links(idea_id);
+
+  -- Indexes for comments
+  CREATE INDEX IF NOT EXISTS idx_challenge_comments_problem_id ON challenge_comments(problem_id);
+  CREATE INDEX IF NOT EXISTS idx_challenge_comments_user_id ON challenge_comments(user_id);
+`);
+
+// AI Research Debate tables
+db.exec(`
+  -- Debate sessions table (AI-powered research debates)
+  CREATE TABLE IF NOT EXISTS debate_sessions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    topic TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'setup' CHECK(status IN ('setup', 'active', 'paused', 'concluded')),
+
+    -- Agent configurations (JSON objects with modelId, systemPrompt, apiKeyEncrypted)
+    affirmative_config TEXT NOT NULL,
+    negative_config TEXT NOT NULL,
+    judge_config TEXT NOT NULL,
+
+    -- Conversation state
+    messages TEXT DEFAULT '[]',           -- JSON array of DebateMessage
+    current_speaker TEXT,                 -- 'affirmative' | 'negative' | 'judge' | 'user'
+    turn_count INTEGER DEFAULT 0,
+    max_turns INTEGER DEFAULT 20,
+
+    -- Background knowledge
+    background_knowledge TEXT,
+    paper_ids TEXT DEFAULT '[]',          -- JSON array of paper IDs
+
+    -- Conclusion
+    conclusion TEXT,
+    winner TEXT CHECK(winner IN ('affirmative', 'negative', 'draw', NULL)),
+    concluded_at INTEGER,
+
+    -- Token tracking
+    total_tokens_affirmative INTEGER DEFAULT 0,
+    total_tokens_negative INTEGER DEFAULT 0,
+    total_tokens_judge INTEGER DEFAULT 0,
+
+    -- Timestamps
+    created_at INTEGER DEFAULT (unixepoch()),
+    updated_at INTEGER DEFAULT (unixepoch())
+  );
+
+  -- Indexes for debate sessions
+  CREATE INDEX IF NOT EXISTS idx_debate_sessions_user_id ON debate_sessions(user_id);
+  CREATE INDEX IF NOT EXISTS idx_debate_sessions_status ON debate_sessions(status);
+  CREATE INDEX IF NOT EXISTS idx_debate_sessions_created_at ON debate_sessions(created_at);
+`);
 
 console.log('Database initialized at:', DB_PATH);
 

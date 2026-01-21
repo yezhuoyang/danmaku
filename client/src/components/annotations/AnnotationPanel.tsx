@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -26,6 +26,11 @@ import {
   User,
   UserPlus,
   UserMinus,
+  AlertTriangle,
+  Hand,
+  GripVertical,
+  Pencil,
+  Check,
 } from "lucide-react";
 import { Link } from "wouter";
 import { Annotation, ANNOTATION_COLORS, TYPE_COLORS } from "./AnnotationDanmaku";
@@ -157,6 +162,7 @@ interface AnnotationPanelProps {
   selectedAnnotationId: string | null;
   onSelectAnnotation: (id: string | null) => void;
   onDeleteAnnotation: (id: string) => void;
+  onEditAnnotation?: (id: string, newText: string, newLatex?: string) => void;
   onHideAnnotation?: (id: string) => void;
   onUnhideAnnotation?: (id: string) => void;
   hiddenAnnotationIds?: Set<string>;
@@ -164,6 +170,8 @@ interface AnnotationPanelProps {
   currentPage: number;
   isCreatingMode: boolean;
   onToggleCreatingMode: () => void;
+  isInteractionDisabled?: boolean;
+  onEnableInteraction?: () => void;
   pendingHighlight: {
     x: number;
     y: number;
@@ -204,6 +212,7 @@ export function AnnotationPanel({
   selectedAnnotationId,
   onSelectAnnotation,
   onDeleteAnnotation,
+  onEditAnnotation,
   onHideAnnotation,
   onUnhideAnnotation,
   hiddenAnnotationIds,
@@ -211,6 +220,8 @@ export function AnnotationPanel({
   currentPage,
   isCreatingMode,
   onToggleCreatingMode,
+  isInteractionDisabled = false,
+  onEnableInteraction,
   pendingHighlight,
   onClearPendingHighlight,
   showAIPanel,
@@ -232,6 +243,51 @@ export function AnnotationPanel({
   const [isSentencePreviewExpanded, setIsSentencePreviewExpanded] = useState(false);
   const [isFigureTablePreviewExpanded, setIsFigureTablePreviewExpanded] = useState(false);
   const latexPreviewRef = useRef<HTMLDivElement>(null);
+
+  // Resizable panel state
+  const [panelWidth, setPanelWidth] = useState(288); // w-72 = 18rem = 288px
+  const [isResizing, setIsResizing] = useState(false);
+  const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
+
+  const MIN_PANEL_WIDTH = 240;
+  const MAX_PANEL_WIDTH = 800;
+
+  // Handle resize drag
+  useEffect(() => {
+    if (!isResizing) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!resizeRef.current) return;
+
+      // Calculate new width based on mouse position (dragging from right edge)
+      const deltaX = e.clientX - resizeRef.current.startX;
+      const newWidth = Math.min(MAX_PANEL_WIDTH, Math.max(MIN_PANEL_WIDTH, resizeRef.current.startWidth + deltaX));
+      setPanelWidth(newWidth);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizing(false);
+      resizeRef.current = null;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isResizing]);
+
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizing(true);
+    resizeRef.current = { startX: e.clientX, startWidth: panelWidth };
+    document.body.style.cursor = 'ew-resize';
+    document.body.style.userSelect = 'none';
+  }, [panelWidth]);
 
   // Preview character limits
   const SENTENCE_PREVIEW_CHAR_LIMIT = 100;
@@ -324,7 +380,23 @@ export function AnnotationPanel({
   };
 
   return (
-    <div className="w-72 h-full bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-700 flex flex-col overflow-hidden">
+    <div
+      className="h-full bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-700 flex flex-col overflow-hidden relative"
+      style={{ width: `${panelWidth}px` }}
+    >
+      {/* Resize handle on right edge */}
+      <div
+        className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize group z-10 flex items-center"
+        onMouseDown={handleResizeStart}
+      >
+        {/* Visual indicator */}
+        <div className="absolute right-0 top-0 bottom-0 w-1 bg-transparent group-hover:bg-indigo-400/50 transition-colors" />
+        {/* Grip icon - visible on hover */}
+        <div className="absolute right-0 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity bg-indigo-100 dark:bg-indigo-900 rounded-l px-0.5 py-2">
+          <GripVertical className="w-3 h-4 text-indigo-500" />
+        </div>
+      </div>
+
       {/* Header */}
       <div className="flex-shrink-0 p-4 border-b border-slate-200 dark:border-slate-700">
         <div className="flex items-center justify-between mb-3">
@@ -360,6 +432,31 @@ export function AnnotationPanel({
           </div>
         </div>
 
+        {/* Reading Mode Warning */}
+        {isInteractionDisabled && (
+          <div className="mb-3 p-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-lg">
+            <div className="flex items-start gap-2">
+              <Hand className="w-4 h-4 text-amber-600 dark:text-amber-400 flex-shrink-0 mt-0.5" />
+              <div className="flex-1 min-w-0">
+                <p className="text-xs text-amber-800 dark:text-amber-200 font-medium">Reading Mode Active</p>
+                <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">
+                  Interactions are disabled. Enable interactive mode to add annotations.
+                </p>
+                {onEnableInteraction && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="mt-2 h-7 text-xs border-amber-300 dark:border-amber-700 hover:bg-amber-100 dark:hover:bg-amber-900/50"
+                    onClick={onEnableInteraction}
+                  >
+                    Enable Interactive Mode
+                  </Button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Add annotation button */}
         {currentUserName ? (
           <Button
@@ -367,7 +464,7 @@ export function AnnotationPanel({
             variant={isCreatingMode ? "default" : "outline"}
             className="w-full gap-2"
             size="sm"
-            disabled={isFigureTableMode}
+            disabled={isFigureTableMode || isInteractionDisabled}
           >
             {isCreatingMode ? (
               <>
@@ -691,6 +788,7 @@ export function AnnotationPanel({
                 isHidden={hiddenAnnotationIds?.has(annotation.id) ?? false}
                 onSelect={() => onSelectAnnotation(annotation.id)}
                 onDelete={() => onDeleteAnnotation(annotation.id)}
+                onEdit={onEditAnnotation ? (newText: string, newLatex?: string) => onEditAnnotation(annotation.id, newText, newLatex) : undefined}
                 onHide={onHideAnnotation ? () => onHideAnnotation(annotation.id) : undefined}
                 onUnhide={onUnhideAnnotation ? () => onUnhideAnnotation(annotation.id) : undefined}
                 currentUserName={currentUserName}
@@ -724,6 +822,7 @@ function AnnotationListItem({
   isHidden,
   onSelect,
   onDelete,
+  onEdit,
   onHide,
   onUnhide,
   currentUserName,
@@ -734,17 +833,22 @@ function AnnotationListItem({
   isHidden: boolean;
   onSelect: () => void;
   onDelete: () => void;
+  onEdit?: (newText: string, newLatex?: string) => void;
   onHide?: () => void;
   onUnhide?: () => void;
   currentUserName?: string;
   currentUserId?: string;
 }) {
   const contentRef = useRef<HTMLDivElement>(null);
+  const editTextareaRef = useRef<HTMLTextAreaElement>(null);
   const [isHovered, setIsHovered] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
   const [isSentenceExpanded, setIsSentenceExpanded] = useState(false);
   const [isFigureTableExpanded, setIsFigureTableExpanded] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editText, setEditText] = useState(annotation.text);
+  const [editLatex, setEditLatex] = useState(annotation.latex || '');
 
   // Check if current user owns this annotation
   const isOwnAnnotation = currentUserName && annotation.userName === currentUserName;
@@ -786,6 +890,64 @@ function AnnotationListItem({
   const handleExpandToggle = (e: React.MouseEvent) => {
     e.stopPropagation();
     setIsExpanded(!isExpanded);
+  };
+
+  const handleEditClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditText(annotation.text);
+    setEditLatex(annotation.latex || '');
+    setIsEditing(true);
+    setTimeout(() => {
+      editTextareaRef.current?.focus();
+      editTextareaRef.current?.select();
+    }, 0);
+  };
+
+  const handleEditSave = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (onEdit) {
+      if (annotation.latex) {
+        // LaTeX annotation - save edited LaTeX
+        if (editLatex.trim()) {
+          onEdit(editText.trim() || editLatex.trim(), editLatex.trim());
+        }
+      } else {
+        // Text annotation
+        if (editText.trim()) {
+          onEdit(editText.trim(), undefined);
+        }
+      }
+    }
+    setIsEditing(false);
+  };
+
+  const handleEditCancel = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditText(annotation.text);
+    setEditLatex(annotation.latex || '');
+    setIsEditing(false);
+  };
+
+  const handleEditKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      setEditText(annotation.text);
+      setEditLatex(annotation.latex || '');
+      setIsEditing(false);
+    } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      if (onEdit) {
+        if (annotation.latex) {
+          if (editLatex.trim()) {
+            onEdit(editText.trim() || editLatex.trim(), editLatex.trim());
+          }
+        } else {
+          if (editText.trim()) {
+            onEdit(editText.trim(), undefined);
+          }
+        }
+      }
+      setIsEditing(false);
+    }
   };
 
   return (
@@ -851,24 +1013,59 @@ function AnnotationListItem({
         >
           <Eye className="w-3 h-3" />
         </button>
+      ) : isEditing ? (
+        /* Edit mode - show save/cancel buttons */
+        <div
+          className="absolute -top-2 right-0 flex items-center gap-1 z-10"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            className="w-5 h-5 rounded-full bg-green-500 hover:bg-green-600 text-white flex items-center justify-center shadow-md"
+            onClick={handleEditSave}
+            title="Save (Ctrl+Enter)"
+          >
+            <Check className="w-3 h-3" />
+          </button>
+          <button
+            className="w-5 h-5 rounded-full bg-slate-500 hover:bg-slate-600 text-white flex items-center justify-center shadow-md"
+            onClick={handleEditCancel}
+            title="Cancel (Esc)"
+          >
+            <X className="w-3 h-3" />
+          </button>
+        </div>
       ) : isOwnAnnotation ? (
-        /* Delete button for own annotations */
-        <button
+        /* Edit and Delete buttons for own annotations */
+        <div
           className={`
-            absolute -top-2 -right-2 w-5 h-5 rounded-full
-            bg-red-500 hover:bg-red-600 text-white
-            flex items-center justify-center
-            shadow-md transition-all duration-200 z-10
+            absolute -top-2 right-0 flex items-center gap-1 z-10
+            transition-all duration-200
             ${isHovered || isSelected ? "opacity-100 scale-100" : "opacity-0 scale-75"}
           `}
-          onClick={(e) => {
-            e.stopPropagation();
-            setShowDeleteConfirm(true);
-          }}
-          title="Delete annotation"
+          onClick={(e) => e.stopPropagation()}
         >
-          <X className="w-3 h-3" />
-        </button>
+          {/* Edit button */}
+          {onEdit && (
+            <button
+              className="w-5 h-5 rounded-full bg-blue-500 hover:bg-blue-600 text-white flex items-center justify-center shadow-md"
+              onClick={handleEditClick}
+              title="Edit annotation"
+            >
+              <Pencil className="w-2.5 h-2.5" />
+            </button>
+          )}
+          {/* Delete button */}
+          <button
+            className="w-5 h-5 rounded-full bg-red-500 hover:bg-red-600 text-white flex items-center justify-center shadow-md"
+            onClick={(e) => {
+              e.stopPropagation();
+              setShowDeleteConfirm(true);
+            }}
+            title="Delete annotation"
+          >
+            <X className="w-3 h-3" />
+          </button>
+        </div>
       ) : (
         /* Hide button for others' annotations */
         <button
@@ -1014,7 +1211,40 @@ function AnnotationListItem({
 
           {/* Content - fixed width container to prevent overflow */}
           <div style={{ width: "100%", overflow: "hidden" }}>
-            {annotation.latex ? (
+            {isEditing ? (
+              /* Edit mode - show textarea */
+              annotation.latex ? (
+                /* LaTeX edit mode */
+                <div className="space-y-1" onClick={(e) => e.stopPropagation()}>
+                  <div className="flex items-center gap-1 text-[9px] text-slate-500 dark:text-slate-400">
+                    <span className="font-medium">LaTeX:</span>
+                    <span className="text-slate-400">Ctrl+Enter to save</span>
+                  </div>
+                  <textarea
+                    ref={editTextareaRef}
+                    value={editLatex}
+                    onChange={(e) => setEditLatex(e.target.value)}
+                    onKeyDown={handleEditKeyDown}
+                    className="w-full text-xs text-slate-700 dark:text-slate-200 bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded p-1.5 resize-none focus:outline-none focus:ring-2 focus:ring-purple-500 font-mono"
+                    style={{ minHeight: '50px', maxHeight: '100px' }}
+                    placeholder="Enter LaTeX formula..."
+                  />
+                </div>
+              ) : (
+                /* Text edit mode */
+                <div onClick={(e) => e.stopPropagation()}>
+                  <textarea
+                    ref={editTextareaRef}
+                    value={editText}
+                    onChange={(e) => setEditText(e.target.value)}
+                    onKeyDown={handleEditKeyDown}
+                    className="w-full text-xs text-slate-700 dark:text-slate-200 bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded p-1.5 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    style={{ minHeight: '50px', maxHeight: '100px' }}
+                    placeholder="Enter your annotation..."
+                  />
+                </div>
+              )
+            ) : annotation.latex ? (
               <>
                 <div
                   ref={contentRef}

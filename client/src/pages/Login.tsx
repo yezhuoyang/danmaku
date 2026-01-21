@@ -38,15 +38,13 @@ export default function Login() {
     <div className="min-h-screen bg-gradient-to-br from-indigo-100 via-purple-100 to-pink-100 dark:from-slate-950 dark:via-indigo-950/40 dark:to-purple-950/40 flex items-center justify-center p-4">
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
-          <Link href="/">
-            <a className="flex items-center justify-center gap-2 mb-4">
-              <div className="w-10 h-10 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-lg flex items-center justify-center">
-                <MessageSquare className="w-5 h-5 text-white" />
-              </div>
-              <span className="font-semibold text-xl text-slate-800 dark:text-slate-100">
-                PaperPilot
-              </span>
-            </a>
+          <Link href="/" className="flex items-center justify-center gap-2 mb-4">
+            <div className="w-10 h-10 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-lg flex items-center justify-center">
+              <MessageSquare className="w-5 h-5 text-white" />
+            </div>
+            <span className="font-semibold text-xl text-slate-800 dark:text-slate-100">
+              PaperPilot
+            </span>
           </Link>
           <CardTitle>Welcome back</CardTitle>
           <CardDescription>Sign in to your account</CardDescription>
@@ -88,9 +86,7 @@ export default function Login() {
           </form>
           <div className="mt-4 text-center text-sm text-slate-500">
             Don't have an account?{" "}
-            <Link href="/register">
-              <a className="text-indigo-600 hover:underline">Register</a>
-            </Link>
+            <Link href="/register" className="text-indigo-600 hover:underline">Register</Link>
           </div>
         </CardContent>
       </Card>

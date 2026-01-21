@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import katex from "katex";
 import "katex/dist/katex.min.css";
-import { X, ChevronDown, ChevronUp, Minus, AlertCircle, User, UserPlus, UserMinus } from "lucide-react";
+import { X, ChevronDown, ChevronUp, Minus, AlertCircle, User, UserPlus, UserMinus, Pencil, Check } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Button } from "@/components/ui/button";
 import { LikeButtons } from "@/components/ui/LikeButtons";
@@ -53,6 +53,7 @@ interface AnnotationDanmakuProps {
   onSelect?: (id: string) => void;
   onDelete?: (id: string) => void;
   onHide?: (id: string) => void;
+  onEdit?: (id: string, newText: string, newLatex?: string) => void;
   onPositionChange?: (id: string, newPosition: { x: number; y: number }) => void;
   scale?: number;
   containerRef?: React.RefObject<HTMLElement>;
@@ -66,6 +67,7 @@ export function AnnotationDanmaku({
   onSelect,
   onDelete,
   onHide,
+  onEdit,
   onPositionChange,
   scale = 1,
   currentUserName,
@@ -73,6 +75,7 @@ export function AnnotationDanmaku({
 }: AnnotationDanmakuProps) {
   const [, setLocation] = useLocation();
   const contentRef = useRef<HTMLDivElement>(null);
+  const editTextareaRef = useRef<HTMLTextAreaElement>(null);
   const [isHovered, setIsHovered] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
@@ -80,6 +83,9 @@ export function AnnotationDanmaku({
   const [avatarPopoverOpen, setAvatarPopoverOpen] = useState(false);
   const [isFollowing, setIsFollowing] = useState(false);
   const [isFollowLoading, setIsFollowLoading] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editText, setEditText] = useState(annotation.text);
+  const [editLatex, setEditLatex] = useState(annotation.latex || '');
 
   // Check if current user owns this annotation
   const isOwnAnnotation = currentUserName && annotation.userName === currentUserName;
@@ -258,6 +264,69 @@ export function AnnotationDanmaku({
     }
   }, [annotation.id, onHide]);
 
+  const handleEditClick = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setEditText(annotation.text);
+    setEditLatex(annotation.latex || '');
+    setIsEditing(true);
+    // Focus the textarea after render
+    setTimeout(() => {
+      editTextareaRef.current?.focus();
+      editTextareaRef.current?.select();
+    }, 0);
+  }, [annotation.text, annotation.latex]);
+
+  const handleEditSave = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    // For LaTeX annotations, use edited latex; for text, use edited text
+    if (onEdit) {
+      if (annotation.latex) {
+        // LaTeX annotation - save edited LaTeX
+        if (editLatex.trim()) {
+          onEdit(annotation.id, editText.trim() || editLatex.trim(), editLatex.trim());
+        }
+      } else {
+        // Text annotation
+        if (editText.trim()) {
+          onEdit(annotation.id, editText.trim(), undefined);
+        }
+      }
+    }
+    setIsEditing(false);
+  }, [annotation.id, annotation.latex, editText, editLatex, onEdit]);
+
+  const handleEditCancel = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setEditText(annotation.text);
+    setEditLatex(annotation.latex || '');
+    setIsEditing(false);
+  }, [annotation.text, annotation.latex]);
+
+  const handleEditKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      setEditText(annotation.text);
+      setEditLatex(annotation.latex || '');
+      setIsEditing(false);
+    } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+      // For LaTeX annotations, use edited latex; for text, use edited text
+      if (onEdit) {
+        if (annotation.latex) {
+          if (editLatex.trim()) {
+            onEdit(annotation.id, editText.trim() || editLatex.trim(), editLatex.trim());
+          }
+        } else {
+          if (editText.trim()) {
+            onEdit(annotation.id, editText.trim(), undefined);
+          }
+        }
+      }
+      setIsEditing(false);
+    }
+  }, [annotation.id, annotation.latex, annotation.text, editText, editLatex, onEdit]);
+
   const handleSelect = useCallback(() => {
     if (!isDragging && onSelect) {
       onSelect(annotation.id);
@@ -385,8 +454,34 @@ export function AnnotationDanmaku({
                 <span className="text-[10px] font-bold">✕</span>
               </button>
             </div>
+          ) : isEditing ? (
+            /* Edit mode save/cancel buttons */
+            <div
+              className="absolute flex items-center gap-1 z-20"
+              style={{
+                top: "2px",
+                right: "2px",
+              }}
+            >
+              <button
+                className="w-6 h-6 rounded-full bg-green-500 hover:bg-green-600 text-white flex items-center justify-center shadow-md"
+                onClick={handleEditSave}
+                onMouseDown={(e) => e.stopPropagation()}
+                title="Save (Ctrl+Enter)"
+              >
+                <Check className="w-3.5 h-3.5" />
+              </button>
+              <button
+                className="w-6 h-6 rounded-full bg-slate-500 hover:bg-slate-600 text-white flex items-center justify-center shadow-md"
+                onClick={handleEditCancel}
+                onMouseDown={(e) => e.stopPropagation()}
+                title="Cancel (Esc)"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
           ) : isOwnAnnotation ? (
-            /* Hide and Delete buttons for own annotations */
+            /* Hide, Edit and Delete buttons for own annotations */
             <div
               className={`
                 absolute flex items-center gap-1 z-20
@@ -407,6 +502,17 @@ export function AnnotationDanmaku({
               >
                 <Minus className="w-3.5 h-3.5" />
               </button>
+              {/* Edit button */}
+              {onEdit && (
+                <button
+                  className="w-6 h-6 rounded-full bg-blue-500 hover:bg-blue-600 text-white flex items-center justify-center shadow-md"
+                  onClick={handleEditClick}
+                  onMouseDown={(e) => e.stopPropagation()}
+                  title="Edit annotation"
+                >
+                  <Pencil className="w-3 h-3" />
+                </button>
+              )}
               {/* Delete button */}
               <button
                 className="w-6 h-6 rounded-full bg-red-500 hover:bg-red-600 text-white flex items-center justify-center shadow-md"
@@ -582,7 +688,48 @@ export function AnnotationDanmaku({
 
               {/* Content */}
               <div style={{ width: "100%", overflow: "hidden" }}>
-                {annotation.latex ? (
+                {isEditing ? (
+                  /* Edit mode - show appropriate textarea */
+                  annotation.latex ? (
+                    /* LaTeX edit mode */
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-1 text-[9px] text-slate-500 dark:text-slate-400">
+                        <span className="font-medium">LaTeX:</span>
+                        <span className="text-slate-400">Ctrl+Enter to save, Esc to cancel</span>
+                      </div>
+                      <textarea
+                        ref={editTextareaRef}
+                        value={editLatex}
+                        onChange={(e) => setEditLatex(e.target.value)}
+                        onKeyDown={handleEditKeyDown}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onClick={(e) => e.stopPropagation()}
+                        className="w-full text-xs text-slate-700 dark:text-slate-200 bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded p-1.5 resize-none focus:outline-none focus:ring-2 focus:ring-purple-500 font-mono"
+                        style={{
+                          minHeight: '60px',
+                          maxHeight: '120px',
+                        }}
+                        placeholder="Enter LaTeX formula..."
+                      />
+                    </div>
+                  ) : (
+                    /* Text edit mode */
+                    <textarea
+                      ref={editTextareaRef}
+                      value={editText}
+                      onChange={(e) => setEditText(e.target.value)}
+                      onKeyDown={handleEditKeyDown}
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={(e) => e.stopPropagation()}
+                      className="w-full text-xs text-slate-700 dark:text-slate-200 bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded p-1.5 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      style={{
+                        minHeight: '60px',
+                        maxHeight: '120px',
+                      }}
+                      placeholder="Enter your annotation text..."
+                    />
+                  )
+                ) : annotation.latex ? (
                   <>
                     <div
                       ref={contentRef}

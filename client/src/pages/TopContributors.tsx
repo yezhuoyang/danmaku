@@ -227,18 +227,16 @@ function TopContributorsList() {
                       {/* User Info */}
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-3 mb-3">
-                          <Link href={`/profile/${contributor.userId}`}>
-                            <a className="flex items-center gap-2 hover:underline">
-                              <Avatar className="w-8 h-8">
-                                <AvatarImage src={contributor.userAvatar} />
-                                <AvatarFallback className="bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400">
-                                  {contributor.userName.charAt(0).toUpperCase()}
-                                </AvatarFallback>
-                              </Avatar>
-                              <span className="font-semibold text-slate-800 dark:text-slate-200">
-                                {contributor.userName}
-                              </span>
-                            </a>
+                          <Link href={`/profile/${contributor.userId}`} className="flex items-center gap-2 hover:underline">
+                            <Avatar className="w-8 h-8">
+                              <AvatarImage src={contributor.userAvatar} />
+                              <AvatarFallback className="bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400">
+                                {contributor.userName.charAt(0).toUpperCase()}
+                              </AvatarFallback>
+                            </Avatar>
+                            <span className="font-semibold text-slate-800 dark:text-slate-200">
+                              {contributor.userName}
+                            </span>
                           </Link>
                           <Badge className="bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400 border-0">
                             {contributor.totalScore} points

@@ -24,6 +24,8 @@ import {
   ThumbsUp,
   ThumbsDown,
   ChevronRight,
+  Lightbulb,
+  Scale,
 } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { LikeButtons } from "@/components/ui/LikeButtons";
@@ -36,6 +38,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@/contexts/AuthContext";
+import { NotificationBell } from "@/components/NotificationBell";
 import * as api from "@/lib/api";
 import type { SiteStats, RecentDanmaku } from "@/lib/api";
 import type { AiModelRanking, AiModelProvider, TopContributor } from "../../../shared/types";
@@ -180,6 +183,8 @@ export default function Home() {
   const { user, isLoading: authLoading, logout } = useAuth();
   const [, setLocation] = useLocation();
   const [searchQuery, setSearchQuery] = useState("");
+  const [challengeSearchQuery, setChallengeSearchQuery] = useState("");
+  const [debateSearchQuery, setDebateSearchQuery] = useState("");
   const [stats, setStats] = useState<SiteStats | null>(null);
   const [recentDanmaku, setRecentDanmaku] = useState<RecentDanmaku[]>([]);
   const [modelRankings, setModelRankings] = useState<AiModelRanking[]>([]);
@@ -252,6 +257,24 @@ export default function Home() {
     }
   };
 
+  const handleChallengeSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (challengeSearchQuery.trim()) {
+      setLocation(`/challenge-problems?q=${encodeURIComponent(challengeSearchQuery.trim())}`);
+    } else {
+      setLocation("/challenge-problems");
+    }
+  };
+
+  const handleDebateSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (debateSearchQuery.trim()) {
+      setLocation(`/debates?q=${encodeURIComponent(debateSearchQuery.trim())}`);
+    } else {
+      setLocation("/debates");
+    }
+  };
+
   const formatNumber = (num: number) => {
     if (num >= 1000000) return (num / 1000000).toFixed(1) + "M";
     if (num >= 1000) return (num / 1000).toFixed(1) + "K";
@@ -282,11 +305,17 @@ export default function Home() {
       {/* Minimal Navigation */}
       <nav className="absolute top-0 right-0 p-4 z-10">
         <div className="flex items-center gap-3">
-          <Link href="/about">
-            <a className="text-sm text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors flex items-center gap-1">
-              <Info className="w-4 h-4" />
-              About
-            </a>
+          <Link href="/challenge-problems" className="text-sm text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors flex items-center gap-1">
+            <Lightbulb className="w-4 h-4" />
+            Challenges
+          </Link>
+          <Link href="/debates" className="text-sm text-slate-600 dark:text-slate-300 hover:text-purple-600 dark:hover:text-purple-400 transition-colors flex items-center gap-1">
+            <Scale className="w-4 h-4" />
+            AI Debates
+          </Link>
+          <Link href="/about" className="text-sm text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors flex items-center gap-1">
+            <Info className="w-4 h-4" />
+            About
           </Link>
           {!authLoading && !user && (
             <>
@@ -299,34 +328,37 @@ export default function Home() {
             </>
           )}
           {!authLoading && user && (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="sm" className="gap-2">
-                  <User className="h-4 w-4" />
-                  {user.displayName}
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <Link href={`/profile/${user.id}`}>
-                  <DropdownMenuItem>
-                    <User className="h-4 w-4 mr-2" />
-                    Profile
-                  </DropdownMenuItem>
-                </Link>
-                {user.isAdmin && (
-                  <Link href="/admin">
+            <>
+              <NotificationBell />
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="sm" className="gap-2">
+                    <User className="h-4 w-4" />
+                    {user.displayName}
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <Link href={`/profile/${user.id}`}>
                     <DropdownMenuItem>
-                      <Shield className="h-4 w-4 mr-2" />
-                      Admin
+                      <User className="h-4 w-4 mr-2" />
+                      Profile
                     </DropdownMenuItem>
                   </Link>
-                )}
-                <DropdownMenuItem onClick={handleLogout}>
-                  <LogOut className="h-4 w-4 mr-2" />
-                  Logout
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+                  {user.isAdmin && (
+                    <Link href="/admin">
+                      <DropdownMenuItem>
+                        <Shield className="h-4 w-4 mr-2" />
+                        Admin
+                      </DropdownMenuItem>
+                    </Link>
+                  )}
+                  <DropdownMenuItem onClick={handleLogout}>
+                    <LogOut className="h-4 w-4 mr-2" />
+                    Logout
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </>
           )}
         </div>
       </nav>
@@ -342,11 +374,9 @@ export default function Home() {
                 <Users className="w-4 h-4 text-indigo-500" />
                 Top Contributors
               </h2>
-              <Link href="/top-contributors">
-                <a className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1">
-                  View All
-                  <ChevronRight className="w-3 h-3" />
-                </a>
+              <Link href="/top-contributors" className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1">
+                View All
+                <ChevronRight className="w-3 h-3" />
               </Link>
             </div>
 
@@ -371,8 +401,7 @@ export default function Home() {
                 <CardContent className="p-0">
                   <div className="divide-y divide-slate-100 dark:divide-slate-800 max-h-[400px] overflow-y-auto">
                     {topContributors.slice(0, 8).map((contributor, index) => (
-                      <Link key={contributor.userId} href={`/profile/${contributor.userId}`}>
-                        <a className="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+                      <Link key={contributor.userId} href={`/profile/${contributor.userId}`} className="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
                           {/* Rank */}
                           <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0 ${
                             index === 0 ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400' :
@@ -404,7 +433,6 @@ export default function Home() {
                               {contributor.totalScore} pts
                             </span>
                           </div>
-                        </a>
                       </Link>
                     ))}
                   </div>
@@ -418,10 +446,8 @@ export default function Home() {
                 <Star className="w-4 h-4 text-indigo-600 dark:text-indigo-400 flex-shrink-0" />
                 <p className="text-xs text-indigo-800 dark:text-indigo-200">
                   <span className="font-medium">Top contributor:</span>{" "}
-                  <Link href={`/profile/${topContributors[0].userId}`}>
-                    <a className="font-semibold hover:underline">
-                      {topContributors[0].userName}
-                    </a>
+                  <Link href={`/profile/${topContributors[0].userId}`} className="font-semibold hover:underline">
+                    {topContributors[0].userName}
                   </Link>
                   <span className="text-indigo-600 dark:text-indigo-400 ml-1">
                     ({topContributors[0].totalScore} pts)
@@ -468,7 +494,7 @@ export default function Home() {
             </form>
 
             {/* Action Buttons */}
-            <div className="flex gap-3">
+            <div className="flex gap-3 mb-8">
               <Button
                 type="submit"
                 onClick={handleSearch}
@@ -480,6 +506,74 @@ export default function Home() {
                 <Link href="/browse">Browse All</Link>
               </Button>
             </div>
+
+            {/* Research Challenges Search */}
+            <h2 className="text-xl font-semibold text-slate-700 dark:text-slate-300 mb-2 text-center flex items-center justify-center gap-2">
+              <Lightbulb className="w-5 h-5 text-purple-500" />
+              Research Challenge Problems
+            </h2>
+            <p className="text-sm text-slate-500 dark:text-slate-400 mb-3 text-center">
+              What is the research problem you want to solve?
+            </p>
+            <form onSubmit={handleChallengeSearch} className="w-full max-w-2xl mb-4">
+              <div className="relative group">
+                <Lightbulb className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 group-focus-within:text-purple-500 transition-colors" />
+                <Input
+                  type="text"
+                  value={challengeSearchQuery}
+                  onChange={(e) => setChallengeSearchQuery(e.target.value)}
+                  placeholder="Search research challenges and open questions..."
+                  className="w-full h-12 pl-12 pr-4 text-base rounded-full border-2 border-slate-200 dark:border-slate-700 focus:border-purple-500 dark:focus:border-purple-500 shadow-sm hover:shadow-md focus:shadow-lg transition-all"
+                />
+              </div>
+            </form>
+            <div className="flex gap-3 mb-10">
+              <Button
+                variant="outline"
+                onClick={handleChallengeSearch}
+                className="px-6"
+              >
+                <Lightbulb className="w-4 h-4 mr-2" />
+                Search Challenges
+              </Button>
+              <Button variant="ghost" asChild className="px-6">
+                <Link href="/challenge-problems">Browse All Challenges</Link>
+              </Button>
+            </div>
+
+            {/* AI Debates Search */}
+            <h2 className="text-xl font-semibold text-slate-700 dark:text-slate-300 mb-2 text-center flex items-center justify-center gap-2">
+              <Scale className="w-5 h-5 text-indigo-500" />
+              AI Research Debates
+            </h2>
+            <p className="text-sm text-slate-500 dark:text-slate-400 mb-3 text-center">
+              Watch AI agents debate research topics and ideas
+            </p>
+            <form onSubmit={handleDebateSearch} className="w-full max-w-2xl mb-4">
+              <div className="relative group">
+                <Scale className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 group-focus-within:text-indigo-500 transition-colors" />
+                <Input
+                  type="text"
+                  value={debateSearchQuery}
+                  onChange={(e) => setDebateSearchQuery(e.target.value)}
+                  placeholder="Search AI debates by topic..."
+                  className="w-full h-12 pl-12 pr-4 text-base rounded-full border-2 border-slate-200 dark:border-slate-700 focus:border-indigo-500 dark:focus:border-indigo-500 shadow-sm hover:shadow-md focus:shadow-lg transition-all"
+                />
+              </div>
+            </form>
+            <div className="flex gap-3">
+              <Button
+                variant="outline"
+                onClick={handleDebateSearch}
+                className="px-6"
+              >
+                <Scale className="w-4 h-4 mr-2" />
+                Search Debates
+              </Button>
+              <Button variant="ghost" asChild className="px-6">
+                <Link href="/debates">Browse All Debates</Link>
+              </Button>
+            </div>
           </div>
 
           {/* Right: AI Model Arena */}
@@ -489,11 +583,9 @@ export default function Home() {
                 <Trophy className="w-4 h-4 text-yellow-500" />
                 AI Model Arena
               </h2>
-              <Link href="/model-rankings">
-                <a className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1">
-                  View All
-                  <ChevronRight className="w-3 h-3" />
-                </a>
+              <Link href="/model-rankings" className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1">
+                View All
+                <ChevronRight className="w-3 h-3" />
               </Link>
             </div>
 
@@ -512,8 +604,7 @@ export default function Home() {
                 <CardContent className="p-0">
                   <div className="divide-y divide-slate-100 dark:divide-slate-800 max-h-[400px] overflow-y-auto">
                     {displayRankings.slice(0, 8).map((model, index) => (
-                      <Link key={model.modelId} href={`/model-rankings/${model.modelId}`}>
-                        <a className="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+                      <Link key={model.modelId} href={`/model-rankings/${model.modelId}`} className="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
                           {/* Rank */}
                           <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0 ${
                             index === 0 ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400' :
@@ -545,7 +636,6 @@ export default function Home() {
                               {model.score > 0 ? '+' : ''}{model.score}
                             </span>
                           </div>
-                        </a>
                       </Link>
                     ))}
                   </div>
@@ -559,10 +649,8 @@ export default function Home() {
                 <Trophy className="w-4 h-4 text-yellow-600 dark:text-yellow-400 flex-shrink-0" />
                 <p className="text-xs text-yellow-800 dark:text-yellow-200">
                   <span className="font-medium">Top model for reviewing papers:</span>{" "}
-                  <Link href={`/model-rankings/${displayRankings[0].modelId}`}>
-                    <a className="font-semibold hover:underline">
-                      {displayRankings[0].modelName}
-                    </a>
+                  <Link href={`/model-rankings/${displayRankings[0].modelId}`} className="font-semibold hover:underline">
+                    {displayRankings[0].modelName}
                   </Link>
                   <span className="text-yellow-600 dark:text-yellow-400 ml-1">
                     (+{displayRankings[0].score} score)
@@ -733,10 +821,8 @@ export default function Home() {
       {/* Footer */}
       <footer className="py-6 text-center">
         <div className="flex items-center justify-center gap-6 text-sm text-slate-500">
-          <Link href="/about">
-            <a className="hover:text-slate-700 dark:hover:text-slate-300 transition-colors">
-              About
-            </a>
+          <Link href="/about" className="hover:text-slate-700 dark:hover:text-slate-300 transition-colors">
+            About
           </Link>
           <a href="https://github.com/yezhuoyang/danmaku" target="_blank" rel="noopener noreferrer" className="hover:text-slate-700 dark:hover:text-slate-300 transition-colors">
             GitHub

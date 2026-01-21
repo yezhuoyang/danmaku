@@ -341,6 +341,22 @@ function HistoryCard({
 
         {/* Actions */}
         <div className="flex items-center gap-1 shrink-0">
+          {/* Set API Key button - prominent for owner without API key */}
+          {isOwner && !history.apiKeySet && (
+            <Button
+              variant="default"
+              size="sm"
+              onClick={() => {
+                setIsExpanded(true);
+                setShowApiKeyInput(true);
+              }}
+              title="Set API Key to enable AI features"
+              className="h-8 px-3 gap-1.5 bg-amber-500 hover:bg-amber-600 text-white"
+            >
+              <Key className="w-4 h-4" />
+              <span className="text-xs font-medium">Set API Key</span>
+            </Button>
+          )}
           {isOwner && !history.isActive && (
             <Button
               variant="ghost"

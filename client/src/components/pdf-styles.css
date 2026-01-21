@@ -57,7 +57,7 @@
   color: transparent !important;
 }
 
-/* Annotation layer styling */
+/* Annotation layer styling - for PDF internal links (references, citations) */
 .pdf-page-with-text .react-pdf__Page__annotations,
 .react-pdf__Page__annotations {
   position: absolute !important;
@@ -65,14 +65,38 @@
   left: 0 !important;
   right: 0 !important;
   bottom: 0 !important;
+  pointer-events: none !important;  /* Layer itself doesn't capture events */
+  z-index: 5 !important;  /* Above text layer but below our SVG overlay */
+}
+
+/* Make individual link sections clickable */
+.pdf-page-with-text .react-pdf__Page__annotations section,
+.react-pdf__Page__annotations section {
   pointer-events: auto !important;
-  z-index: 1 !important;
+  cursor: pointer !important;
 }
 
 .pdf-page-with-text .react-pdf__Page__annotations a,
 .react-pdf__Page__annotations a {
-  color: #3b82f6;
-  text-decoration: underline;
+  color: transparent !important;  /* Hide the default blue, our links are invisible overlays */
+  pointer-events: auto !important;
+  cursor: pointer !important;
+  display: block !important;
+  position: absolute !important;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* For internal PDF links (goto actions) */
+.pdf-page-with-text .react-pdf__Page__annotations .linkAnnotation,
+.react-pdf__Page__annotations .linkAnnotation {
+  pointer-events: auto !important;
+  cursor: pointer !important;
+}
+
+.pdf-page-with-text .react-pdf__Page__annotations .linkAnnotation:hover,
+.react-pdf__Page__annotations .linkAnnotation:hover {
+  background-color: rgba(59, 130, 246, 0.15) !important;
 }
 
 /* Canvas styling - ensure it's below the text layer */

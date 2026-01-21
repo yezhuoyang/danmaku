@@ -19,8 +19,10 @@ import {
   FileText,
   ChevronDown,
   Info,
+  Bot,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
+import { NotificationBell } from "@/components/NotificationBell";
 import { AddPaperDialog } from "@/components/AddPaperDialog";
 import { Link, useLocation, useSearch } from "wouter";
 import * as api from "../lib/api";
@@ -72,6 +74,20 @@ function SearchResultItem({ paper }: { paper: PaperWithStats }) {
           )}
         </div>
 
+        {/* Tags */}
+        {paper.tags && paper.tags.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mb-2">
+            {paper.tags.map((tag, index) => (
+              <span
+                key={index}
+                className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-600"
+              >
+                {tag}
+              </span>
+            ))}
+          </div>
+        )}
+
         {/* Abstract snippet */}
         <p className="text-sm text-slate-600 dark:text-slate-400 line-clamp-2 mb-2">
           {paper.abstract || "No abstract available."}
@@ -91,6 +107,22 @@ function SearchResultItem({ paper }: { paper: PaperWithStats }) {
             <MessageSquare className="w-3 h-3" />
             {paper.annotationCount} annotations
           </span>
+          {/* AI Review Stats - only show if there are AI reviews */}
+          {paper.aiReviewCount && paper.aiReviewCount > 0 && (
+            <span className={`flex items-center gap-1 px-1.5 py-0.5 rounded ${
+              paper.aiReviewAvgScore && paper.aiReviewAvgScore >= 3
+                ? 'bg-emerald-50 dark:bg-emerald-900/30 text-emerald-600 dark:text-emerald-400'
+                : paper.aiReviewAvgScore && paper.aiReviewAvgScore >= 2.5
+                ? 'bg-amber-50 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400'
+                : 'bg-red-50 dark:bg-red-900/30 text-red-600 dark:text-red-400'
+            }`}>
+              <Bot className="w-3 h-3" />
+              {paper.aiReviewAvgScore?.toFixed(1)}/4
+              <span className="text-slate-400 dark:text-slate-500">
+                ({paper.aiReviewCount} {paper.aiReviewCount === 1 ? 'review' : 'reviews'})
+              </span>
+            </span>
+          )}
         </div>
       </div>
     </Link>
@@ -161,12 +193,10 @@ export default function Browse() {
       <header className="sticky top-0 z-50 bg-white/60 dark:bg-slate-900/80 backdrop-blur-md border-b border-indigo-200/50 dark:border-slate-800">
         <div className="container flex items-center gap-6 h-16">
           {/* Logo */}
-          <Link href="/">
-            <a className="flex items-center gap-2 flex-shrink-0">
-              <div className="w-8 h-8 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-lg flex items-center justify-center">
-                <MessageSquare className="w-4 h-4 text-white" />
-              </div>
-            </a>
+          <Link href="/" className="flex items-center gap-2 flex-shrink-0">
+            <div className="w-8 h-8 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-lg flex items-center justify-center">
+              <MessageSquare className="w-4 h-4 text-white" />
+            </div>
           </Link>
 
           {/* Search bar */}
@@ -185,35 +215,36 @@ export default function Browse() {
 
           {/* Right side */}
           <div className="flex items-center gap-3 flex-shrink-0">
-            <Link href="/about">
-              <a className="text-sm text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors flex items-center gap-1">
-                <Info className="w-4 h-4" />
-                About
-              </a>
+            <Link href="/about" className="text-sm text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors flex items-center gap-1">
+              <Info className="w-4 h-4" />
+              About
             </Link>
             {authLoading ? (
               <Skeleton className="h-9 w-20" />
             ) : user ? (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="sm" className="gap-2">
-                    <User className="h-4 w-4" />
-                    {user.displayName}
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <Link href={`/profile/${user.id}`}>
-                    <DropdownMenuItem>
-                      <User className="h-4 w-4 mr-2" />
-                      Profile
+              <>
+                <NotificationBell />
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="sm" className="gap-2">
+                      <User className="h-4 w-4" />
+                      {user.displayName}
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <Link href={`/profile/${user.id}`}>
+                      <DropdownMenuItem>
+                        <User className="h-4 w-4 mr-2" />
+                        Profile
+                      </DropdownMenuItem>
+                    </Link>
+                    <DropdownMenuItem onClick={handleLogout}>
+                      <LogOut className="h-4 w-4 mr-2" />
+                      Logout
                     </DropdownMenuItem>
-                  </Link>
-                  <DropdownMenuItem onClick={handleLogout}>
-                    <LogOut className="h-4 w-4 mr-2" />
-                    Logout
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </>
             ) : (
               <div className="flex gap-2">
                 <Button variant="ghost" size="sm" asChild>

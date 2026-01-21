@@ -1,5 +1,5 @@
-import { useState, useCallback, useMemo } from 'react';
-import { X, Send, MessageCircle, Reply, Image, Table2, ChevronDown, ChevronUp, Sparkles, AlertTriangle, Lightbulb, Tag, Trash2, LogIn, User, UserPlus, UserMinus } from 'lucide-react';
+import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import { X, Send, MessageCircle, Reply, Image, Table2, ChevronDown, ChevronUp, Sparkles, AlertTriangle, Lightbulb, Tag, Trash2, LogIn, User, UserPlus, UserMinus, GripVertical, Pencil, Check } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -139,15 +139,21 @@ interface DiscussionThreadProps {
   onAddReply: (annotationId: string, text: string) => void;
   onDeleteAnnotation?: (annotationId: string) => void;
   onDeleteReply?: (annotationId: string, replyId: string) => void;
+  onEditAnnotation?: (annotationId: string, newText: string) => void;
+  onEditReply?: (annotationId: string, replyId: string, newText: string) => void;
   currentUserName?: string;
   currentUserId?: string;
 }
 
-function DiscussionThread({ annotation, onAddReply, onDeleteAnnotation, onDeleteReply, currentUserName, currentUserId }: DiscussionThreadProps) {
+function DiscussionThread({ annotation, onAddReply, onDeleteAnnotation, onDeleteReply, onEditAnnotation, onEditReply, currentUserName, currentUserId }: DiscussionThreadProps) {
   const [replyText, setReplyText] = useState('');
   const [showReplyForm, setShowReplyForm] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [replyToDelete, setReplyToDelete] = useState<string | null>(null);
+  const [isEditingComment, setIsEditingComment] = useState(false);
+  const [editCommentText, setEditCommentText] = useState(annotation.text);
+  const [editingReplyId, setEditingReplyId] = useState<string | null>(null);
+  const [editReplyText, setEditReplyText] = useState('');
 
   const handleSubmitReply = () => {
     if (replyText.trim()) {
@@ -172,6 +178,41 @@ function DiscussionThread({ annotation, onAddReply, onDeleteAnnotation, onDelete
       onDeleteReply(annotation.id, replyId);
     }
     setReplyToDelete(null);
+  };
+
+  const handleEditCommentClick = () => {
+    setEditCommentText(annotation.text);
+    setIsEditingComment(true);
+  };
+
+  const handleSaveComment = () => {
+    if (onEditAnnotation && editCommentText.trim()) {
+      onEditAnnotation(annotation.id, editCommentText.trim());
+    }
+    setIsEditingComment(false);
+  };
+
+  const handleCancelEditComment = () => {
+    setEditCommentText(annotation.text);
+    setIsEditingComment(false);
+  };
+
+  const handleEditReplyClick = (replyId: string, replyText: string) => {
+    setEditingReplyId(replyId);
+    setEditReplyText(replyText);
+  };
+
+  const handleSaveReply = (replyId: string) => {
+    if (onEditReply && editReplyText.trim()) {
+      onEditReply(annotation.id, replyId, editReplyText.trim());
+    }
+    setEditingReplyId(null);
+    setEditReplyText('');
+  };
+
+  const handleCancelEditReply = () => {
+    setEditingReplyId(null);
+    setEditReplyText('');
   };
 
   return (
@@ -233,44 +274,91 @@ function DiscussionThread({ annotation, onAddReply, onDeleteAnnotation, onDelete
             </div>
           )}
 
-          <p className={`text-sm break-words overflow-wrap-anywhere ${isAI ? 'text-slate-700 dark:text-slate-200' : 'text-slate-600 dark:text-slate-300'}`}>
-            {annotation.text}
-          </p>
-          <div className="flex items-center gap-2 mt-1">
-            {/* Like/Dislike buttons */}
-            <LikeButtons
-              targetType="comment"
-              targetId={annotation.id}
-              currentUserId={currentUserId}
-              size="sm"
-            />
-            {currentUserName ? (
-              <button
-                onClick={() => setShowReplyForm(!showReplyForm)}
-                className="text-xs text-slate-500 hover:text-green-600 flex items-center gap-1"
-              >
-                <Reply className="w-3 h-3" />
-                Reply
-              </button>
-            ) : (
-              <Link href="/login">
-                <span className="text-xs text-slate-400 hover:text-green-600 flex items-center gap-1 cursor-pointer">
-                  <LogIn className="w-3 h-3" />
-                  Login to reply
-                </span>
-              </Link>
-            )}
-            {/* Delete button - only for own comments */}
-            {isOwnComment && !isAI && onDeleteAnnotation && (
-              <button
-                onClick={() => setShowDeleteConfirm(true)}
-                className="text-xs text-red-400 hover:text-red-600 flex items-center gap-1"
-              >
-                <Trash2 className="w-3 h-3" />
-                Delete
-              </button>
-            )}
-          </div>
+          {isEditingComment ? (
+            /* Edit mode for comment */
+            <div className="space-y-2">
+              <textarea
+                value={editCommentText}
+                onChange={(e) => setEditCommentText(e.target.value)}
+                className="w-full text-sm text-slate-700 dark:text-slate-200 bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded p-2 resize-none focus:outline-none focus:ring-2 focus:ring-blue-500"
+                rows={3}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    handleCancelEditComment();
+                  } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                    handleSaveComment();
+                  }
+                }}
+              />
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleSaveComment}
+                  className="text-xs px-2 py-1 bg-green-500 hover:bg-green-600 text-white rounded flex items-center gap-1"
+                >
+                  <Check className="w-3 h-3" />
+                  Save
+                </button>
+                <button
+                  onClick={handleCancelEditComment}
+                  className="text-xs px-2 py-1 bg-slate-500 hover:bg-slate-600 text-white rounded flex items-center gap-1"
+                >
+                  <X className="w-3 h-3" />
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <>
+              <p className={`text-sm break-words overflow-wrap-anywhere ${isAI ? 'text-slate-700 dark:text-slate-200' : 'text-slate-600 dark:text-slate-300'}`}>
+                {annotation.text}
+              </p>
+              <div className="flex items-center gap-2 mt-1">
+                {/* Like/Dislike buttons */}
+                <LikeButtons
+                  targetType="comment"
+                  targetId={annotation.id}
+                  currentUserId={currentUserId}
+                  size="sm"
+                />
+                {currentUserName ? (
+                  <button
+                    onClick={() => setShowReplyForm(!showReplyForm)}
+                    className="text-xs text-slate-500 hover:text-green-600 flex items-center gap-1"
+                  >
+                    <Reply className="w-3 h-3" />
+                    Reply
+                  </button>
+                ) : (
+                  <Link href="/login">
+                    <span className="text-xs text-slate-400 hover:text-green-600 flex items-center gap-1 cursor-pointer">
+                      <LogIn className="w-3 h-3" />
+                      Login to reply
+                    </span>
+                  </Link>
+                )}
+                {/* Edit button - only for own comments and not AI */}
+                {isOwnComment && !isAI && onEditAnnotation && (
+                  <button
+                    onClick={handleEditCommentClick}
+                    className="text-xs text-blue-400 hover:text-blue-600 flex items-center gap-1"
+                  >
+                    <Pencil className="w-3 h-3" />
+                    Edit
+                  </button>
+                )}
+                {/* Delete button - only for own comments */}
+                {isOwnComment && !isAI && onDeleteAnnotation && (
+                  <button
+                    onClick={() => setShowDeleteConfirm(true)}
+                    className="text-xs text-red-400 hover:text-red-600 flex items-center gap-1"
+                  >
+                    <Trash2 className="w-3 h-3" />
+                    Delete
+                  </button>
+                )}
+              </div>
+            </>
+          )}
         </div>
 
         {/* Delete confirmation popup */}
@@ -300,6 +388,7 @@ function DiscussionThread({ annotation, onAddReply, onDeleteAnnotation, onDelete
         <div className="ml-10 mt-2 space-y-2">
           {annotation.replies.map((reply) => {
             const isOwnReply = currentUserName && reply.userName === currentUserName;
+            const isEditingThisReply = editingReplyId === reply.id;
             return (
               <div key={reply.id} className="flex gap-2 group relative">
                 <div className="w-6 h-6 rounded-full bg-slate-300 dark:bg-slate-600 flex items-center justify-center text-xs text-white flex-shrink-0">
@@ -317,8 +406,18 @@ function DiscussionThread({ annotation, onAddReply, onDeleteAnnotation, onDelete
                     <span className="text-xs text-slate-400">
                       {formatTimestamp(reply.timestamp)}
                     </span>
+                    {/* Edit button for own replies */}
+                    {isOwnReply && onEditReply && !isEditingThisReply && (
+                      <button
+                        onClick={() => handleEditReplyClick(reply.id, reply.text)}
+                        className="text-xs text-slate-400 hover:text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                        title="Edit reply"
+                      >
+                        <Pencil className="w-3 h-3" />
+                      </button>
+                    )}
                     {/* Delete button for own replies */}
-                    {isOwnReply && onDeleteReply && (
+                    {isOwnReply && onDeleteReply && !isEditingThisReply && (
                       <button
                         onClick={() => setReplyToDelete(reply.id)}
                         className="text-xs text-slate-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
@@ -328,18 +427,56 @@ function DiscussionThread({ annotation, onAddReply, onDeleteAnnotation, onDelete
                       </button>
                     )}
                   </div>
-                  <p className="text-xs text-slate-600 dark:text-slate-400 break-words overflow-wrap-anywhere">
-                    {reply.text}
-                  </p>
-                  {/* Like/Dislike buttons for replies */}
-                  <div className="mt-1">
-                    <LikeButtons
-                      targetType="comment"
-                      targetId={reply.id}
-                      currentUserId={currentUserId}
-                      size="sm"
-                    />
-                  </div>
+                  {isEditingThisReply ? (
+                    /* Edit mode for reply */
+                    <div className="space-y-1.5 mt-1">
+                      <input
+                        type="text"
+                        value={editReplyText}
+                        onChange={(e) => setEditReplyText(e.target.value)}
+                        className="w-full text-xs text-slate-600 dark:text-slate-400 bg-slate-50 dark:bg-slate-700 border border-slate-300 dark:border-slate-600 rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        onKeyDown={(e) => {
+                          if (e.key === 'Escape') {
+                            handleCancelEditReply();
+                          } else if (e.key === 'Enter') {
+                            handleSaveReply(reply.id);
+                          }
+                        }}
+                        autoFocus
+                      />
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => handleSaveReply(reply.id)}
+                          className="text-[10px] px-1.5 py-0.5 bg-green-500 hover:bg-green-600 text-white rounded flex items-center gap-0.5"
+                        >
+                          <Check className="w-2.5 h-2.5" />
+                          Save
+                        </button>
+                        <button
+                          onClick={handleCancelEditReply}
+                          className="text-[10px] px-1.5 py-0.5 bg-slate-500 hover:bg-slate-600 text-white rounded flex items-center gap-0.5"
+                        >
+                          <X className="w-2.5 h-2.5" />
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <p className="text-xs text-slate-600 dark:text-slate-400 break-words overflow-wrap-anywhere">
+                        {reply.text}
+                      </p>
+                      {/* Like/Dislike buttons for replies */}
+                      <div className="mt-1">
+                        <LikeButtons
+                          targetType="comment"
+                          targetId={reply.id}
+                          currentUserId={currentUserId}
+                          size="sm"
+                        />
+                      </div>
+                    </>
+                  )}
                 </div>
                 {/* Delete confirmation for reply */}
                 {replyToDelete === reply.id && (
@@ -411,6 +548,8 @@ interface FigureTableDiscussionPanelProps {
   onAddReply: (annotationId: string, reply: Omit<SentenceAnnotationReply, 'id' | 'timestamp'>) => void;
   onDeleteAnnotation?: (annotationId: string) => void;
   onDeleteReply?: (annotationId: string, replyId: string) => void;
+  onEditAnnotation?: (annotationId: string, newText: string) => void;
+  onEditReply?: (annotationId: string, replyId: string, newText: string) => void;
   onClose: () => void;
   isOpen: boolean;
   currentUserName?: string;
@@ -424,6 +563,8 @@ export function FigureTableDiscussionPanel({
   onAddReply,
   onDeleteAnnotation,
   onDeleteReply,
+  onEditAnnotation,
+  onEditReply,
   onClose,
   isOpen,
   currentUserName,
@@ -431,6 +572,51 @@ export function FigureTableDiscussionPanel({
 }: FigureTableDiscussionPanelProps) {
   const [newComment, setNewComment] = useState('');
   const [isCaptionExpanded, setIsCaptionExpanded] = useState(false);
+
+  // Resizable panel state
+  const [panelWidth, setPanelWidth] = useState(380);
+  const [isResizing, setIsResizing] = useState(false);
+  const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
+
+  const MIN_PANEL_WIDTH = 320;
+  const MAX_PANEL_WIDTH = 1200;
+
+  // Handle resize drag
+  useEffect(() => {
+    if (!isResizing) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!resizeRef.current) return;
+
+      // Calculate new width based on mouse position (dragging from left edge)
+      const deltaX = resizeRef.current.startX - e.clientX;
+      const newWidth = Math.min(MAX_PANEL_WIDTH, Math.max(MIN_PANEL_WIDTH, resizeRef.current.startWidth + deltaX));
+      setPanelWidth(newWidth);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizing(false);
+      resizeRef.current = null;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isResizing]);
+
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsResizing(true);
+    resizeRef.current = { startX: e.clientX, startWidth: panelWidth };
+    document.body.style.cursor = 'ew-resize';
+    document.body.style.userSelect = 'none';
+  }, [panelWidth]);
 
   // Check if caption needs truncation
   const captionText = figureTable?.caption || '';
@@ -481,10 +667,27 @@ export function FigureTableDiscussionPanel({
     <>
       {/* Panel */}
       <div
-        className={`fixed top-0 right-0 h-full w-[380px] bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-700 shadow-2xl transform transition-transform duration-300 ease-in-out z-50 flex flex-col ${
+        className={`fixed top-0 right-0 h-full bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-700 shadow-2xl transform z-50 flex flex-col ${
           isOpen ? 'translate-x-0' : 'translate-x-full'
         }`}
+        style={{
+          width: `${panelWidth}px`,
+          transition: isResizing ? 'none' : 'transform 300ms ease-in-out',
+        }}
       >
+        {/* Resize handle */}
+        <div
+          className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize group z-10 flex items-center"
+          onMouseDown={handleResizeStart}
+        >
+          {/* Visual indicator */}
+          <div className={`absolute left-0 top-0 bottom-0 w-1 bg-transparent ${isFigure ? 'group-hover:bg-green-400/50' : 'group-hover:bg-orange-400/50'} transition-colors`} />
+          {/* Grip icon - visible on hover */}
+          <div className={`absolute left-0 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity ${isFigure ? 'bg-green-100 dark:bg-green-900' : 'bg-orange-100 dark:bg-orange-900'} rounded-r px-0.5 py-2`}>
+            <GripVertical className={`w-3 h-4 ${isFigure ? 'text-green-500' : 'text-orange-500'}`} />
+          </div>
+        </div>
+
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-slate-200 dark:border-slate-700">
           <div className="flex items-center gap-2">
@@ -588,6 +791,8 @@ export function FigureTableDiscussionPanel({
                     onAddReply={handleAddReply}
                     onDeleteAnnotation={onDeleteAnnotation}
                     onDeleteReply={onDeleteReply}
+                    onEditAnnotation={onEditAnnotation}
+                    onEditReply={onEditReply}
                     currentUserName={currentUserName}
                     currentUserId={currentUserId}
                   />

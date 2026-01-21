@@ -173,48 +173,46 @@ function ModelRankingsList() {
               <CardContent className="p-0">
                 <div className="divide-y divide-slate-100 dark:divide-slate-800">
                   {paginatedRankings.map((model) => (
-                    <Link key={model.modelId} href={`/model-rankings/${model.modelId}`}>
-                      <a className="flex items-center gap-4 px-6 py-4 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-                        {/* Rank */}
-                        <RankBadge rank={model.rank || 0} />
+                    <Link key={model.modelId} href={`/model-rankings/${model.modelId}`} className="flex items-center gap-4 px-6 py-4 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+                      {/* Rank */}
+                      <RankBadge rank={model.rank || 0} />
 
-                        {/* Model Info */}
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="font-semibold text-slate-800 dark:text-slate-200">
-                              {model.modelName}
-                            </span>
-                            <Badge className={`text-xs ${PROVIDER_COLORS[model.provider] || PROVIDER_COLORS.custom}`}>
-                              {PROVIDER_NAMES[model.provider] || model.provider}
-                            </Badge>
-                          </div>
-                          <div className="flex items-center gap-4 mt-1 text-sm text-slate-500 dark:text-slate-400">
-                            <span className="flex items-center gap-1">
-                              <Users className="w-3 h-3" />
-                              {model.sessionCount} sessions
-                            </span>
-                          </div>
+                      {/* Model Info */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-semibold text-slate-800 dark:text-slate-200">
+                            {model.modelName}
+                          </span>
+                          <Badge className={`text-xs ${PROVIDER_COLORS[model.provider] || PROVIDER_COLORS.custom}`}>
+                            {PROVIDER_NAMES[model.provider] || model.provider}
+                          </Badge>
                         </div>
+                        <div className="flex items-center gap-4 mt-1 text-sm text-slate-500 dark:text-slate-400">
+                          <span className="flex items-center gap-1">
+                            <Users className="w-3 h-3" />
+                            {model.sessionCount} sessions
+                          </span>
+                        </div>
+                      </div>
 
-                        {/* Votes */}
-                        <div className="flex items-center gap-4">
-                          <div className="flex items-center gap-1 text-green-600 dark:text-green-400">
-                            <ThumbsUp className="w-4 h-4" />
-                            <span className="font-medium">{model.likeCount}</span>
-                          </div>
-                          <div className="flex items-center gap-1 text-red-500 dark:text-red-400">
-                            <ThumbsDown className="w-4 h-4" />
-                            <span className="font-medium">{model.dislikeCount}</span>
-                          </div>
-                          <div className={`text-xl font-bold min-w-[60px] text-right ${
-                            model.score > 0 ? 'text-green-600 dark:text-green-400' :
-                            model.score < 0 ? 'text-red-500 dark:text-red-400' :
-                            'text-slate-500'
-                          }`}>
-                            {model.score > 0 ? '+' : ''}{model.score}
-                          </div>
+                      {/* Votes */}
+                      <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-1 text-green-600 dark:text-green-400">
+                          <ThumbsUp className="w-4 h-4" />
+                          <span className="font-medium">{model.likeCount}</span>
                         </div>
-                      </a>
+                        <div className="flex items-center gap-1 text-red-500 dark:text-red-400">
+                          <ThumbsDown className="w-4 h-4" />
+                          <span className="font-medium">{model.dislikeCount}</span>
+                        </div>
+                        <div className={`text-xl font-bold min-w-[60px] text-right ${
+                          model.score > 0 ? 'text-green-600 dark:text-green-400' :
+                          model.score < 0 ? 'text-red-500 dark:text-red-400' :
+                          'text-slate-500'
+                        }`}>
+                          {model.score > 0 ? '+' : ''}{model.score}
+                        </div>
+                      </div>
                     </Link>
                   ))}
                 </div>
@@ -421,21 +419,19 @@ function ModelDetail() {
             ) : (
               <div className="divide-y dark:divide-slate-700">
                 {model.recentSessions.map((session) => (
-                  <Link key={session.id} href={`/paper/${session.paperId}`}>
-                    <a className="flex items-center gap-4 py-3 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors -mx-4 px-4 rounded-lg">
-                      <div className="flex-1 min-w-0">
-                        <p className="font-medium text-slate-800 dark:text-slate-200 truncate">
-                          {session.title}
-                        </p>
-                        <p className="text-sm text-slate-500 dark:text-slate-400 truncate">
-                          Paper: {session.paperTitle}
-                        </p>
-                        <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">
-                          by {session.userName} • {new Date(session.createdAt * 1000).toLocaleDateString()}
-                        </p>
-                      </div>
-                      <ExternalLink className="w-4 h-4 text-slate-400 flex-shrink-0" />
-                    </a>
+                  <Link key={session.id} href={`/paper/${session.paperId}`} className="flex items-center gap-4 py-3 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors -mx-4 px-4 rounded-lg">
+                    <div className="flex-1 min-w-0">
+                      <p className="font-medium text-slate-800 dark:text-slate-200 truncate">
+                        {session.title}
+                      </p>
+                      <p className="text-sm text-slate-500 dark:text-slate-400 truncate">
+                        Paper: {session.paperTitle}
+                      </p>
+                      <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">
+                        by {session.userName} • {new Date(session.createdAt * 1000).toLocaleDateString()}
+                      </p>
+                    </div>
+                    <ExternalLink className="w-4 h-4 text-slate-400 flex-shrink-0" />
                   </Link>
                 ))}
               </div>

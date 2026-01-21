@@ -307,6 +307,13 @@ export async function addPaper(data: AddPaperRequest): Promise<{ paper: PaperWit
   });
 }
 
+export async function updatePaperTags(paperId: string, tags: string[]): Promise<{ success: boolean; tags: string[] }> {
+  return request<{ success: boolean; tags: string[] }>(`/papers/${paperId}/tags`, {
+    method: 'PATCH',
+    body: JSON.stringify({ tags }),
+  });
+}
+
 export async function getPaperAnnotations(paperId: string): Promise<{ annotations: Annotation[] }> {
   return request<{ annotations: Annotation[] }>(`/papers/${paperId}/annotations`);
 }
@@ -327,6 +334,17 @@ export async function deleteAnnotation(
 ): Promise<void> {
   await request(`/papers/${paperId}/annotations/${annotationId}`, {
     method: 'DELETE',
+  });
+}
+
+export async function updateAnnotation(
+  paperId: string,
+  annotationId: string,
+  content: any
+): Promise<{ annotation: Annotation }> {
+  return request<{ annotation: Annotation }>(`/papers/${paperId}/annotations/${annotationId}`, {
+    method: 'PATCH',
+    body: JSON.stringify({ content }),
   });
 }
 
@@ -578,6 +596,14 @@ export async function activateAiAgentHistory(
   historyId: string
 ): Promise<{ history: AiAgentHistory }> {
   return request<{ history: AiAgentHistory }>(`/papers/${paperId}/agent-history/${historyId}/activate`, {
+    method: 'POST',
+  });
+}
+
+export async function deactivateAllSessions(
+  paperId: string
+): Promise<{ success: boolean; message: string }> {
+  return request<{ success: boolean; message: string }>(`/papers/${paperId}/agent-history/deactivate-all`, {
     method: 'POST',
   });
 }
@@ -1175,4 +1201,317 @@ export async function getInsights(
   return request<{ openQuestions?: OpenQuestion[]; researchIdeas?: ResearchIdea[] }>(
     `/papers/${paperId}/insights/${historyId}`
   );
+}
+
+// Get all public insights for a paper (from public sessions)
+import type { PublicInsightsResponse } from '../../../shared/types';
+
+export async function getPublicInsights(
+  paperId: string
+): Promise<PublicInsightsResponse> {
+  return request<PublicInsightsResponse>(
+    `/papers/${paperId}/insights/public`
+  );
+}
+
+// ============================================================================
+// NOTIFICATIONS API
+// ============================================================================
+
+import type { Notification, NotificationListResponse } from '../../../shared/types';
+
+// Get notifications for the current user
+export async function getNotifications(options?: {
+  limit?: number;
+  offset?: number;
+}): Promise<NotificationListResponse> {
+  const params = new URLSearchParams();
+  if (options?.limit) params.set('limit', String(options.limit));
+  if (options?.offset) params.set('offset', String(options.offset));
+  const query = params.toString();
+  return request<NotificationListResponse>(`/auth/notifications${query ? `?${query}` : ''}`);
+}
+
+// Get unread notification count
+export async function getUnreadNotificationCount(): Promise<{ count: number }> {
+  return request<{ count: number }>('/auth/notifications/unread-count');
+}
+
+// Mark notifications as read
+export async function markNotificationsRead(notificationIds?: string[]): Promise<void> {
+  await request('/auth/notifications/mark-read', {
+    method: 'POST',
+    body: JSON.stringify({ notificationIds }),
+  });
+}
+
+// Delete a single notification
+export async function deleteNotification(notificationId: string): Promise<void> {
+  await request(`/auth/notifications/${notificationId}`, { method: 'DELETE' });
+}
+
+// Clear all notifications
+export async function clearAllNotifications(): Promise<void> {
+  await request('/auth/notifications', { method: 'DELETE' });
+}
+
+// ============================================================================
+// CHALLENGE PROBLEMS API
+// ============================================================================
+
+import type {
+  ChallengeProblem,
+  ChallengeComment,
+  ChallengeIdeaLink,
+  ChallengeProblemsResponse,
+  ChallengeProblemDetailResponse,
+  CreateChallengeProblemRequest,
+  UpdateChallengeProblemRequest,
+  LinkIdeaToQuestionRequest,
+  CreateChallengeCommentRequest,
+  ChallengeProblemType,
+  ChallengeProblemStatus,
+  IdeaLinkRelationship,
+} from '../../../shared/types';
+
+// List/search challenge problems
+export async function getChallengeProblems(options?: {
+  q?: string;
+  type?: ChallengeProblemType;
+  status?: ChallengeProblemStatus;
+  area?: string;
+  paperId?: string;
+  userId?: string;
+  rootOnly?: boolean;
+  parentId?: string;
+  sort?: 'recent' | 'popular' | 'discussed' | 'tree_progress';
+  limit?: number;
+  offset?: number;
+}): Promise<ChallengeProblemsResponse> {
+  const params = new URLSearchParams();
+  if (options?.q) params.set('q', options.q);
+  if (options?.type) params.set('type', options.type);
+  if (options?.status) params.set('status', options.status);
+  if (options?.area) params.set('area', options.area);
+  if (options?.paperId) params.set('paperId', options.paperId);
+  if (options?.userId) params.set('userId', options.userId);
+  if (options?.rootOnly !== undefined) params.set('rootOnly', String(options.rootOnly));
+  if (options?.parentId) params.set('parentId', options.parentId);
+  if (options?.sort) params.set('sort', options.sort);
+  if (options?.limit) params.set('limit', String(options.limit));
+  if (options?.offset) params.set('offset', String(options.offset));
+  const query = params.toString();
+  return request<ChallengeProblemsResponse>(`/challenges${query ? `?${query}` : ''}`);
+}
+
+// Get a single challenge problem with full details
+export async function getChallengeProblem(id: string): Promise<ChallengeProblemDetailResponse> {
+  return request<ChallengeProblemDetailResponse>(`/challenges/${id}`);
+}
+
+// Create a new challenge problem
+export async function createChallengeProblem(
+  data: CreateChallengeProblemRequest
+): Promise<{ problem: ChallengeProblem }> {
+  return request<{ problem: ChallengeProblem }>('/challenges', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+// Update a challenge problem
+export async function updateChallengeProblem(
+  id: string,
+  data: UpdateChallengeProblemRequest
+): Promise<{ problem: ChallengeProblem }> {
+  return request<{ problem: ChallengeProblem }>(`/challenges/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+}
+
+// Delete a challenge problem
+export async function deleteChallengeProblem(id: string): Promise<void> {
+  await request(`/challenges/${id}`, { method: 'DELETE' });
+}
+
+// Vote on a challenge problem
+export async function voteChallengeProb(
+  id: string,
+  isLike: boolean
+): Promise<{ upvotes: number; downvotes: number }> {
+  return request<{ upvotes: number; downvotes: number }>(`/challenges/${id}/vote`, {
+    method: 'POST',
+    body: JSON.stringify({ isLike }),
+  });
+}
+
+// Get progress tree for a challenge
+export async function getChallengeTree(id: string): Promise<{ tree: ChallengeProblem[] }> {
+  return request<{ tree: ChallengeProblem[] }>(`/challenges/${id}/tree`);
+}
+
+// Link a research idea to a question
+export async function linkIdeaToQuestion(
+  questionId: string,
+  data: LinkIdeaToQuestionRequest
+): Promise<{ success: boolean; id: string }> {
+  return request<{ success: boolean; id: string }>(`/challenges/${questionId}/ideas`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+// Get linked ideas for a question
+export async function getLinkedIdeas(
+  questionId: string
+): Promise<{ links: ChallengeIdeaLink[] }> {
+  return request<{ links: ChallengeIdeaLink[] }>(`/challenges/${questionId}/ideas`);
+}
+
+// Remove an idea link
+export async function removeIdeaLink(questionId: string, linkId: string): Promise<void> {
+  await request(`/challenges/${questionId}/ideas/${linkId}`, { method: 'DELETE' });
+}
+
+// Get questions that an idea addresses
+export async function getQuestionsForIdea(
+  ideaId: string
+): Promise<{ links: ChallengeIdeaLink[] }> {
+  return request<{ links: ChallengeIdeaLink[] }>(`/challenges/${ideaId}/questions`);
+}
+
+// Add a comment to a challenge
+export async function addChallengeComment(
+  problemId: string,
+  data: CreateChallengeCommentRequest
+): Promise<{ comment: ChallengeComment }> {
+  return request<{ comment: ChallengeComment }>(`/challenges/${problemId}/comments`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+// Get comments for a challenge
+export async function getChallengeComments(
+  problemId: string
+): Promise<{ comments: ChallengeComment[] }> {
+  return request<{ comments: ChallengeComment[] }>(`/challenges/${problemId}/comments`);
+}
+
+// Delete a challenge comment
+export async function deleteChallengeComment(commentId: string): Promise<void> {
+  await request(`/challenges/comments/${commentId}`, { method: 'DELETE' });
+}
+
+// Get distinct research areas
+export async function getChallengeAreas(): Promise<{ areas: string[] }> {
+  return request<{ areas: string[] }>('/challenges/areas');
+}
+
+// ============================================================================
+// AI DEBATE API
+// ============================================================================
+
+import type {
+  DebateSession,
+  DebateMessage,
+  CreateDebateRequest,
+  UpdateDebateConfigRequest,
+  DebateSpeaker,
+} from '../../../shared/types';
+
+// List user's debate sessions
+export async function getDebates(): Promise<DebateSession[]> {
+  const response = await request<{ debates: DebateSession[]; total: number }>('/debates');
+  return response.debates;
+}
+
+// Get a single debate session
+export async function getDebate(id: string): Promise<DebateSession> {
+  return request<DebateSession>(`/debates/${id}`);
+}
+
+// Create a new debate session
+export async function createDebate(data: CreateDebateRequest): Promise<DebateSession> {
+  return request<DebateSession>('/debates', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+// Delete a debate session
+export async function deleteDebate(id: string): Promise<void> {
+  await request(`/debates/${id}`, { method: 'DELETE' });
+}
+
+// Update debate config (setup phase only)
+export async function updateDebateConfig(
+  id: string,
+  data: UpdateDebateConfigRequest
+): Promise<DebateSession> {
+  return request<DebateSession>(`/debates/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  });
+}
+
+// Set API key for a debate agent
+export async function setDebateApiKey(
+  id: string,
+  agent: 'affirmative' | 'negative' | 'judge',
+  apiKey: string
+): Promise<DebateSession> {
+  return request<DebateSession>(`/debates/${id}/set-api-key`, {
+    method: 'POST',
+    body: JSON.stringify({ agent, apiKey }),
+  });
+}
+
+// Start the debate
+export async function startDebate(id: string): Promise<{ session: DebateSession; message?: DebateMessage }> {
+  return request<{ session: DebateSession; message?: DebateMessage }>(`/debates/${id}/start`, {
+    method: 'POST',
+  });
+}
+
+// Continue to next turn
+export async function continueDebate(id: string): Promise<{ session: DebateSession; message: DebateMessage }> {
+  return request<{ session: DebateSession; message: DebateMessage }>(`/debates/${id}/continue`, {
+    method: 'POST',
+  });
+}
+
+// Pause the debate
+export async function pauseDebate(id: string): Promise<DebateSession> {
+  return request<DebateSession>(`/debates/${id}/pause`, {
+    method: 'POST',
+  });
+}
+
+// Resume the debate
+export async function resumeDebate(id: string): Promise<DebateSession> {
+  return request<DebateSession>(`/debates/${id}/resume`, {
+    method: 'POST',
+  });
+}
+
+// User intervention
+export async function interveneDebate(
+  id: string,
+  message: string,
+  targetAgent?: DebateSpeaker
+): Promise<DebateSession> {
+  const response = await request<{ session: DebateSession; message: DebateMessage }>(`/debates/${id}/intervene`, {
+    method: 'POST',
+    body: JSON.stringify({ message, targetAgent }),
+  });
+  return response.session;
+}
+
+// Force conclusion
+export async function concludeDebate(id: string): Promise<{ session: DebateSession; conclusion: string }> {
+  return request<{ session: DebateSession; conclusion: string }>(`/debates/${id}/conclude`, {
+    method: 'POST',
+  });
 }

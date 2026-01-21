@@ -11,6 +11,8 @@ import "./db.js";
 import authRouter, { authMiddleware } from "./routes/auth.js";
 import papersRouter from "./routes/papers.js";
 import adminRouter from "./routes/admin.js";
+import challengesRouter from "./routes/challenges.js";
+import debatesRouter from "./routes/debates.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,6 +31,8 @@ async function startServer() {
   app.use("/api/auth", authRouter);
   app.use("/api/papers", papersRouter);
   app.use("/api/admin", adminRouter);
+  app.use("/api/challenges", challengesRouter);
+  app.use("/api/debates", debatesRouter);
 
   // Serve static files from dist/public in production
   const staticPath =

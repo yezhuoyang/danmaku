@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import db from '../db.js';
-import { requireAuth } from './auth.js';
+import { requireAuth, createNotification } from './auth.js';
 import type {
   AddPaperRequest,
   Paper,
@@ -143,6 +143,7 @@ function getPaperWithStats(paperId: string): PaperWithStats | null {
     abstract: paper.abstract,
     addedBy: paper.added_by,
     viewCount: paper.view_count,
+    tags: paper.tags ? JSON.parse(paper.tags) : [],
     createdAt: paper.created_at,
     readerCount: paper.reader_count || 0,
     annotationCount: paper.annotation_count || 0,
@@ -175,7 +176,9 @@ router.get('/', (req: Request, res: Response) => {
       SELECT p.*,
         (SELECT COUNT(DISTINCT user_id) FROM reading_sessions WHERE paper_id = p.id) as reader_count,
         (SELECT COUNT(*) FROM annotations WHERE paper_id = p.id) as annotation_count,
-        (SELECT 1 FROM ai_analysis WHERE paper_id = p.id) as has_ai_analysis
+        (SELECT 1 FROM ai_analysis WHERE paper_id = p.id) as has_ai_analysis,
+        (SELECT COUNT(*) FROM ai_reviews WHERE paper_id = p.id) as ai_review_count,
+        (SELECT AVG((significance_of_problem + novelty_of_solution + correctness + writing_quality + related_work + robustness_of_evaluation) / 6.0) FROM ai_reviews WHERE paper_id = p.id) as ai_review_avg_score
       FROM papers p
       ${whereClause}
       ${orderClause}
@@ -195,10 +198,13 @@ router.get('/', (req: Request, res: Response) => {
       abstract: p.abstract,
       addedBy: p.added_by,
       viewCount: p.view_count,
+      tags: p.tags ? JSON.parse(p.tags) : [],
       createdAt: p.created_at,
       readerCount: p.reader_count || 0,
       annotationCount: p.annotation_count || 0,
       hasAiAnalysis: !!p.has_ai_analysis,
+      aiReviewCount: p.ai_review_count || 0,
+      aiReviewAvgScore: p.ai_review_avg_score || undefined,
     }));
 
     res.json({ papers: papersWithStats, total: total.count });
@@ -883,6 +889,42 @@ router.get('/:paperId/insights/:historyId', requireAuth, (req: Request, res: Res
   }
 });
 
+// GET /api/papers/:paperId/insights/public - Get all public insights for a paper
+router.get('/:paperId/insights/public', (req: Request, res: Response) => {
+  try {
+    const { paperId } = req.params;
+
+    // Get all public sessions that have open questions or research ideas
+    const sessions = db.prepare(`
+      SELECT h.id, h.user_id, h.title, h.model_used, h.is_public, h.open_questions, h.research_ideas, h.updated_at,
+             u.display_name as user_name, u.avatar as user_avatar
+      FROM ai_agent_history h
+      JOIN users u ON h.user_id = u.id
+      WHERE h.paper_id = ? AND h.is_public = 1
+        AND (h.open_questions IS NOT NULL OR h.research_ideas IS NOT NULL)
+      ORDER BY h.updated_at DESC
+    `).all(paperId) as any[];
+
+    // Parse and format the results
+    const publicInsights = sessions.map(session => ({
+      sessionId: session.id,
+      userId: session.user_id,
+      userName: session.user_name,
+      userAvatar: session.user_avatar,
+      sessionTitle: session.title,
+      modelUsed: session.model_used,
+      openQuestions: session.open_questions ? JSON.parse(session.open_questions) : undefined,
+      researchIdeas: session.research_ideas ? JSON.parse(session.research_ideas) : undefined,
+      updatedAt: session.updated_at,
+    }));
+
+    res.json({ insights: publicInsights });
+  } catch (error) {
+    console.error('Get public insights error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to get public insights' });
+  }
+});
+
 // POST /api/papers/:paperId/insights/open-questions - Generate open questions
 router.post('/:paperId/insights/open-questions', requireAuth, async (req: Request, res: Response) => {
   try {
@@ -1454,6 +1496,8 @@ router.post('/likes', requireAuth, (req: Request, res: Response) => {
       SELECT id, is_like FROM likes WHERE user_id = ? AND target_type = ? AND target_id = ?
     `).get(user.id, targetType, targetId) as any;
 
+    let isNewLike = false;  // Track if this is a new like (not toggle off or dislike)
+
     if (existing) {
       if ((existing.is_like === 1) === isLike) {
         // Same vote - remove it (toggle off)
@@ -1461,6 +1505,7 @@ router.post('/likes', requireAuth, (req: Request, res: Response) => {
       } else {
         // Different vote - update it
         db.prepare('UPDATE likes SET is_like = ?, created_at = unixepoch() WHERE id = ?').run(isLike ? 1 : 0, existing.id);
+        if (isLike) isNewLike = true;  // Changing from dislike to like
       }
     } else {
       // New vote
@@ -1469,6 +1514,72 @@ router.post('/likes', requireAuth, (req: Request, res: Response) => {
         INSERT INTO likes (id, user_id, target_type, target_id, is_like)
         VALUES (?, ?, ?, ?, ?)
       `).run(id, user.id, targetType, targetId, isLike ? 1 : 0);
+      if (isLike) isNewLike = true;  // New like
+    }
+
+    // Send notification for likes (not dislikes, not toggle-off)
+    if (isNewLike) {
+      // Find the owner of the content to notify
+      let ownerId: string | null = null;
+      let paperId: string | null = null;
+      let targetTitle: string | null = null;
+
+      if (targetType === 'annotation' || targetType === 'comment') {
+        const annotation = db.prepare(`
+          SELECT user_id, paper_id, content FROM annotations WHERE id = ?
+        `).get(targetId) as any;
+        if (annotation) {
+          ownerId = annotation.user_id;
+          paperId = annotation.paper_id;
+          try {
+            const content = JSON.parse(annotation.content);
+            targetTitle = content.text?.slice(0, 50) || 'Your annotation';
+          } catch {
+            targetTitle = 'Your annotation';
+          }
+        }
+      } else if (targetType === 'user_review') {
+        const review = db.prepare(`
+          SELECT user_id, paper_id FROM user_reviews WHERE id = ?
+        `).get(targetId) as any;
+        if (review) {
+          ownerId = review.user_id;
+          paperId = review.paper_id;
+          targetTitle = 'Your review';
+        }
+      } else if (targetType === 'ai_session') {
+        const session = db.prepare(`
+          SELECT user_id, paper_id, title FROM ai_agent_history WHERE id = ?
+        `).get(targetId) as any;
+        if (session) {
+          ownerId = session.user_id;
+          paperId = session.paper_id;
+          targetTitle = session.title || 'Your AI session';
+        }
+      } else if (targetType === 'necessary_background') {
+        const bg = db.prepare(`
+          SELECT nb.paper_id, ah.user_id FROM necessary_background nb
+          JOIN ai_agent_history ah ON nb.session_id = ah.id
+          WHERE nb.id = ?
+        `).get(targetId) as any;
+        if (bg) {
+          ownerId = bg.user_id;
+          paperId = bg.paper_id;
+          targetTitle = 'Your background concepts';
+        }
+      }
+
+      if (ownerId && ownerId !== user.id) {
+        createNotification({
+          userId: ownerId,
+          type: 'like',
+          actorId: user.id,
+          targetType,
+          targetId,
+          targetTitle: targetTitle || undefined,
+          paperId: paperId || undefined,
+        });
+      }
     }
 
     // Get updated counts
@@ -1591,7 +1702,7 @@ router.get('/:id', (req: Request, res: Response) => {
 router.post('/', requireAuth, (req: Request, res: Response) => {
   try {
     const user = (req as any).user;
-    const { arxivId, contentHash, title, authors, abstract } = req.body as AddPaperRequest;
+    const { arxivId, contentHash, title, authors, abstract, tags } = req.body as AddPaperRequest;
 
     if (!title) {
       return res.status(400).json({ error: 'Bad Request', message: 'Title is required' });
@@ -1620,9 +1731,9 @@ router.post('/', requireAuth, (req: Request, res: Response) => {
     const paperId = uuidv4();
 
     db.prepare(`
-      INSERT INTO papers (id, arxiv_id, content_hash, title, authors, abstract, added_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(paperId, arxivId || null, contentHash || null, title, JSON.stringify(authors || []), abstract || null, user.id);
+      INSERT INTO papers (id, arxiv_id, content_hash, title, authors, abstract, added_by, tags)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(paperId, arxivId || null, contentHash || null, title, JSON.stringify(authors || []), abstract || null, user.id, JSON.stringify(tags || []));
 
     const paper = getPaperWithStats(paperId);
 
@@ -1630,6 +1741,49 @@ router.post('/', requireAuth, (req: Request, res: Response) => {
   } catch (error) {
     console.error('Add paper error:', error);
     res.status(500).json({ error: 'Internal Server Error', message: 'Failed to add paper' });
+  }
+});
+
+// PATCH /api/papers/:id/tags - Update paper tags (only maintainer/uploader can edit)
+router.patch('/:id/tags', requireAuth, (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const user = (req as any).user;
+    const { tags } = req.body as { tags: string[] };
+
+    // Validate tags
+    if (!Array.isArray(tags)) {
+      return res.status(400).json({ error: 'Bad Request', message: 'Tags must be an array' });
+    }
+
+    // Check if paper exists and user is the uploader
+    const paper = db.prepare('SELECT added_by FROM papers WHERE id = ?').get(id) as any;
+    if (!paper) {
+      return res.status(404).json({ error: 'Not Found', message: 'Paper not found' });
+    }
+
+    // Only the paper uploader can edit tags
+    if (paper.added_by !== user.id) {
+      return res.status(403).json({ error: 'Forbidden', message: 'Only the paper uploader can edit tags' });
+    }
+
+    // Validate each tag (max 50 chars, max 10 tags)
+    if (tags.length > 10) {
+      return res.status(400).json({ error: 'Bad Request', message: 'Maximum 10 tags allowed' });
+    }
+
+    const cleanedTags = tags
+      .map(t => t.trim())
+      .filter(t => t.length > 0 && t.length <= 50)
+      .slice(0, 10);
+
+    // Update tags
+    db.prepare('UPDATE papers SET tags = ? WHERE id = ?').run(JSON.stringify(cleanedTags), id);
+
+    res.json({ success: true, tags: cleanedTags });
+  } catch (error) {
+    console.error('Update paper tags error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to update tags' });
   }
 });
 
@@ -1676,8 +1830,8 @@ router.post('/:id/annotations', requireAuth, (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Bad Request', message: 'Missing required fields' });
     }
 
-    // Check paper exists
-    const paper = db.prepare('SELECT id FROM papers WHERE id = ?').get(paperId);
+    // Check paper exists and get uploader info
+    const paper = db.prepare('SELECT id, title, added_by FROM papers WHERE id = ?').get(paperId) as any;
     if (!paper) {
       return res.status(404).json({ error: 'Not Found', message: 'Paper not found' });
     }
@@ -1689,6 +1843,20 @@ router.post('/:id/annotations', requireAuth, (req: Request, res: Response) => {
       INSERT INTO annotations (id, paper_id, user_id, page_number, sentence_id, content)
       VALUES (?, ?, ?, ?, ?, ?)
     `).run(annotationId, paperId, user.id, pageNumber, sentenceId || null, JSON.stringify(content));
+
+    // Notify paper uploader about new annotation (if different user)
+    if (paper.added_by && paper.added_by !== user.id) {
+      const hasHighlightRegion = content && content.highlightRegion;
+      createNotification({
+        userId: paper.added_by,
+        type: hasHighlightRegion ? 'annotation' : 'comment',
+        actorId: user.id,
+        targetType: 'annotation',
+        targetId: annotationId,
+        targetTitle: content.text?.slice(0, 100) || 'New annotation',
+        paperId,
+      });
+    }
 
     res.status(201).json({
       annotation: {
@@ -1734,6 +1902,51 @@ router.delete('/:paperId/annotations/:annotationId', requireAuth, (req: Request,
   } catch (error) {
     console.error('Delete annotation error:', error);
     res.status(500).json({ error: 'Internal Server Error', message: 'Failed to delete annotation' });
+  }
+});
+
+// PATCH /api/papers/:paperId/annotations/:annotationId - Update annotation
+router.patch('/:paperId/annotations/:annotationId', requireAuth, (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    const { paperId, annotationId } = req.params;
+    const { content } = req.body;
+
+    if (!content) {
+      return res.status(400).json({ error: 'Bad Request', message: 'Content is required' });
+    }
+
+    // Check if annotation exists and belongs to user
+    const annotation = db.prepare(`
+      SELECT * FROM annotations WHERE id = ? AND paper_id = ?
+    `).get(annotationId, paperId) as any;
+
+    if (!annotation) {
+      return res.status(404).json({ error: 'Not Found', message: 'Annotation not found' });
+    }
+
+    // Only allow user to edit their own annotations
+    if (annotation.user_id !== user.id) {
+      return res.status(403).json({ error: 'Forbidden', message: 'You can only edit your own annotations' });
+    }
+
+    db.prepare('UPDATE annotations SET content = ? WHERE id = ?').run(JSON.stringify(content), annotationId);
+
+    res.json({
+      annotation: {
+        id: annotationId,
+        paperId,
+        userId: user.id,
+        userName: user.displayName,
+        pageNumber: annotation.page_number,
+        sentenceId: annotation.sentence_id,
+        content,
+        createdAt: annotation.created_at,
+      },
+    });
+  } catch (error) {
+    console.error('Update annotation error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to update annotation' });
   }
 });
 
@@ -2153,9 +2366,10 @@ router.post('/:id/ai-reviews', requireAuth, (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const review = req.body as Omit<AiReview, 'id' | 'paperId' | 'createdAt'>;
+    const user = (req as any).user;
 
-    // Check paper exists
-    const paper = db.prepare('SELECT id FROM papers WHERE id = ?').get(id);
+    // Check paper exists and get uploader info
+    const paper = db.prepare('SELECT id, added_by, title FROM papers WHERE id = ?').get(id) as any;
     if (!paper) {
       return res.status(404).json({ error: 'Not Found', message: 'Paper not found' });
     }
@@ -2195,6 +2409,19 @@ router.post('/:id/ai-reviews', requireAuth, (req: Request, res: Response) => {
     );
 
     const savedReview = db.prepare('SELECT * FROM ai_reviews WHERE id = ?').get(reviewId) as any;
+
+    // Notify paper uploader about new AI review
+    if (paper.added_by && user && paper.added_by !== user.id) {
+      createNotification({
+        userId: paper.added_by,
+        type: 'ai_review',
+        actorId: user.id,
+        targetType: 'ai_review',
+        targetId: reviewId,
+        targetTitle: `AI Review by ${review.generatedBy}`,
+        paperId: id,
+      });
+    }
 
     res.status(201).json({ review: dbRowToAiReview(savedReview) });
   } catch (error) {
@@ -2427,6 +2654,20 @@ router.post('/:id/user-reviews', requireAuth, (req: Request, res: Response) => {
       JOIN users u ON r.user_id = u.id
       WHERE r.id = ?
     `).get(reviewId) as any;
+
+    // Notify paper uploader about new review
+    const paper = db.prepare('SELECT added_by, title FROM papers WHERE id = ?').get(paperId) as any;
+    if (paper && paper.added_by && paper.added_by !== user.id) {
+      createNotification({
+        userId: paper.added_by,
+        type: 'user_review',
+        actorId: user.id,
+        targetType: 'user_review',
+        targetId: reviewId,
+        targetTitle: `Review on "${paper.title?.slice(0, 50)}"`,
+        paperId,
+      });
+    }
 
     res.status(201).json({ review: dbRowToUserReview(newReview, newReview.user_name, newReview.user_avatar) });
   } catch (error) {
@@ -2799,6 +3040,25 @@ router.post('/:paperId/agent-history/:historyId/activate', requireAuth, (req: Re
   } catch (error) {
     console.error('Activate AI agent history error:', error);
     res.status(500).json({ error: 'Internal Server Error', message: 'Failed to activate AI agent history' });
+  }
+});
+
+// POST /api/papers/:paperId/agent-history/deactivate-all - Deactivate all sessions for this user on this paper
+router.post('/:paperId/agent-history/deactivate-all', requireAuth, (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    const { paperId } = req.params;
+
+    // Deactivate all histories for this user on this paper
+    db.prepare(`
+      UPDATE ai_agent_history SET is_active = 0
+      WHERE paper_id = ? AND user_id = ?
+    `).run(paperId, user.id);
+
+    res.json({ success: true, message: 'All sessions deactivated' });
+  } catch (error) {
+    console.error('Deactivate all AI agent history error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to deactivate AI agent histories' });
   }
 });
 
@@ -3315,9 +3575,16 @@ Total sentences analyzed: ${sentences.length}
 Paper Title: ${paper?.title || 'Unknown'}
 ${paper?.abstract ? `Abstract: ${paper.abstract}` : ''}
 ${analysisSummary}
-${context ? `\nCurrent page context from user: ${context}` : ''}
 
-IMPORTANT: You have read this paper. When users ask what paper you read or what it's about, refer to your analysis above. Be helpful, concise, and academic in your responses. You can discuss specific findings, methodology, contributions, and insights from the paper based on your analysis.`;
+IMPORTANT: You have read this paper. When users ask what paper you read or what it's about, refer to your analysis above. Be helpful, concise, and academic in your responses. You can discuss specific findings, methodology, contributions, and insights from the paper based on your analysis.
+
+When users ask questions about specific sentences or sections, pay careful attention to the context they provide. Always reference the specific sentence and section in your answer.`;
+
+    // If context is provided (e.g., for @AI questions about specific sentences),
+    // prepend it to the user message so the AI has full context
+    const effectiveMessage = context
+      ? `${context}\n\nUser's question: ${message.trim()}`
+      : message.trim();
 
     // Store system prompt as first message if not already present (for debugging)
     // Check if we already have a system message at the start
@@ -3339,16 +3606,35 @@ IMPORTANT: You have read this paper. When users ask what paper you read or what 
       };
     }
 
+    // Build chat messages for the API call
+    // The last user message should include the context if provided
     const chatMessages = [
       { role: 'system' as const, content: systemPrompt },
-      ...messages.slice(1).map(m => ({  // Skip the stored system message, we already have it
-        role: m.role as 'user' | 'assistant' | 'system',
-        content: m.content,
-      })),
+      ...messages.slice(1).map((m, idx, arr) => {
+        // For the last message (the current user question), include context if provided
+        if (idx === arr.length - 1 && m.role === 'user' && context) {
+          return {
+            role: m.role as 'user' | 'assistant' | 'system',
+            content: effectiveMessage, // Use the context-enhanced message
+          };
+        }
+        return {
+          role: m.role as 'user' | 'assistant' | 'system',
+          content: m.content,
+        };
+      }),
     ];
 
     // Get the model ID from the session
     const modelId = existing.model_id || 'gpt-4o';
+
+    // Debug logging for @AI follow-up questions
+    if (context) {
+      console.log('[Chat API] Context-enhanced message being sent to AI:');
+      console.log('[Chat API] Original message:', message.trim());
+      console.log('[Chat API] Context:', context.substring(0, 200) + '...');
+      console.log('[Chat API] Effective message:', effectiveMessage.substring(0, 300) + '...');
+    }
 
     // Check if the model is supported
     const provider = getProviderForModel(modelId);

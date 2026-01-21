@@ -1,5 +1,7 @@
-import { useState, useCallback, useRef, useEffect, useMemo } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo, memo } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
+import { toast } from "sonner";
+import type { PDFDocumentProxy } from "pdfjs-dist";
 import "react-pdf/dist/Page/TextLayer.css";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "./pdf-styles.css";
@@ -26,6 +28,10 @@ import {
   X,
   Trash2,
   Edit2,
+  Hand,
+  MousePointer2,
+  Rows3,
+  GalleryHorizontal,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -74,6 +80,7 @@ interface PdfAnnotationViewerProps {
   paperId?: string; // Paper ID for API calls
   paperTitle?: string; // Paper title for display
   initialAnnotations?: Annotation[];
+  initialSentenceComments?: Map<string, SentenceAnnotation[]>; // Pre-loaded sentence comments from API
   onAnnotationAdded?: (annotation: Annotation) => void;
   onAnnotationDeleted?: (annotationId: string) => void;
   onCommentAdded?: (comment: { id: string; type: 'sentence' | 'figure' | 'reply'; targetId: string; text: string; userName: string; pageNumber: number }) => void;
@@ -179,11 +186,356 @@ const SAMPLE_ANNOTATIONS: Annotation[] = [
 
 type SelectionMode = "region" | "sentence" | "figure-table";
 
+// Simple cached page component - uses react-pdf's built-in caching
+// The key optimization is keeping the Page component mounted when possible
+interface CachedPageProps {
+  pageNumber: number;
+  scale: number;
+  width: number;
+  height: number;
+  pdfUrl: string;
+  onLoadSuccess?: (page: any) => void;
+}
+
+const CachedPage = memo(function CachedPage({
+  pageNumber,
+  scale,
+  width,
+  height,
+  pdfUrl,
+  onLoadSuccess
+}: CachedPageProps) {
+  return (
+    <Page
+      pageNumber={pageNumber}
+      scale={scale}
+      renderTextLayer={true}
+      renderAnnotationLayer={true}
+      className="shadow-2xl pdf-page-with-text"
+      loading={
+        <div
+          className="flex items-center justify-center bg-slate-800 rounded-lg"
+          style={{ width: width * scale || 600, height: height * scale || 800 }}
+        >
+          <div className="text-white/50 flex flex-col items-center gap-2">
+            <div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
+            <span className="text-xs">Page {pageNumber}</span>
+          </div>
+        </div>
+      }
+      onLoadSuccess={onLoadSuccess}
+    />
+  );
+}, (prevProps, nextProps) => {
+  // Only re-render when these change
+  return prevProps.pageNumber === nextProps.pageNumber &&
+         prevProps.scale === nextProps.scale &&
+         prevProps.pdfUrl === nextProps.pdfUrl;
+});
+
+// Memoized page wrapper for vertical mode - includes page + overlays
+interface VerticalPageWrapperProps {
+  pageNum: number;
+  scale: number;
+  pdfUrl: string;
+  pageSize: { width: number; height: number };
+  thisPageSize: { width: number; height: number };
+  shouldRender: boolean;
+  pageSentences: Sentence[];
+  pageFigureTables: FigureTable[];
+  pageAnnotations: Annotation[];
+  isInteractionDisabled: boolean;
+  hoveredSentenceId: string | null;
+  selectedSentenceId: string | null;
+  hoveredFigureTableId: string | null;
+  selectedFigureTableId: string | null;
+  selectedAnnotationId: string | null;
+  sentenceAnnotationCounts: Map<string, number>;
+  figureTableAnnotationCounts: Map<string, number>;
+  isCreatingMode: boolean;
+  selectionMode: SelectionMode;
+  isUploader: boolean;
+  currentUserName?: string;
+  currentUserId?: string;
+  onSentenceHover: (id: string | null) => void;
+  onSentenceClick: (id: string) => void;
+  onFigureTableHover: (id: string | null) => void;
+  onFigureTableClick: (id: string) => void;
+  onAnnotationSelect: (id: string | null) => void;
+  onAnnotationDelete: (id: string) => void;
+  onAnnotationHide: (id: string) => void;
+  onAnnotationEdit: (id: string, newText: string, newLatex?: string) => void;
+  onAnnotationPositionChange: (id: string, position: { x: number; y: number }) => void;
+  onRegionDeleted?: (id: string) => void;
+  onPageLoad: (pageNum: number, page: any) => void;
+  containerRef: React.RefObject<HTMLElement>;
+  setPageRef: (pageNum: number, el: HTMLDivElement | null) => void;
+  // Figure/Table drawing mode props
+  isFigureTableMode?: boolean;
+  onDrawStart?: (pageNum: number, x: number, y: number) => void;
+  onDrawMove?: (x: number, y: number) => void;
+  onDrawEnd?: () => void;
+  isDrawing?: boolean;
+  drawingPageNum?: number | null;
+  drawingRect?: { x: number; y: number; width: number; height: number } | null;
+}
+
+const VerticalPageWrapper = memo(function VerticalPageWrapper({
+  pageNum,
+  scale,
+  pdfUrl,
+  pageSize,
+  thisPageSize,
+  shouldRender,
+  pageSentences,
+  pageFigureTables,
+  pageAnnotations,
+  isInteractionDisabled,
+  hoveredSentenceId,
+  selectedSentenceId,
+  hoveredFigureTableId,
+  selectedFigureTableId,
+  selectedAnnotationId,
+  sentenceAnnotationCounts,
+  figureTableAnnotationCounts,
+  isCreatingMode,
+  selectionMode,
+  isUploader,
+  currentUserName,
+  currentUserId,
+  onSentenceHover,
+  onSentenceClick,
+  onFigureTableHover,
+  onFigureTableClick,
+  onAnnotationSelect,
+  onAnnotationDelete,
+  onAnnotationHide,
+  onAnnotationEdit,
+  onAnnotationPositionChange,
+  onRegionDeleted,
+  onPageLoad,
+  containerRef,
+  setPageRef,
+  // Figure/Table drawing mode props
+  isFigureTableMode,
+  onDrawStart,
+  onDrawMove,
+  onDrawEnd,
+  isDrawing,
+  drawingPageNum,
+  drawingRect,
+}: VerticalPageWrapperProps) {
+  const pageRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setPageRef(pageNum, pageRef.current);
+    return () => setPageRef(pageNum, null);
+  }, [pageNum, setPageRef]);
+
+  const handlePageLoad = useCallback((page: any) => {
+    onPageLoad(pageNum, page);
+  }, [pageNum, onPageLoad]);
+
+  // Mouse handlers for figure/table drawing
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    if (!isFigureTableMode || !isUploader || !pageRef.current || !onDrawStart) return;
+
+    // Don't start drawing if clicking on an annotation
+    const target = e.target as HTMLElement;
+    if (target.closest('.annotation-group') || target.closest('[data-annotation]')) return;
+
+    const rect = pageRef.current.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / scale;
+    const y = (e.clientY - rect.top) / scale;
+
+    onDrawStart(pageNum, x, y);
+  }, [isFigureTableMode, isUploader, scale, pageNum, onDrawStart]);
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    if (!isDrawing || drawingPageNum !== pageNum || !pageRef.current || !onDrawMove) return;
+
+    const rect = pageRef.current.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / scale;
+    const y = (e.clientY - rect.top) / scale;
+
+    onDrawMove(x, y);
+  }, [isDrawing, drawingPageNum, pageNum, scale, onDrawMove]);
+
+  const handleMouseUp = useCallback(() => {
+    if (!isDrawing || drawingPageNum !== pageNum || !onDrawEnd) return;
+    onDrawEnd();
+  }, [isDrawing, drawingPageNum, pageNum, onDrawEnd]);
+
+  // Always show interactive overlay if we have sentence data, even when page isn't fully rendered
+  const hasInteractiveData = pageSentences.length > 0 || pageFigureTables.length > 0;
+
+  // Check if this page is currently being drawn on
+  const isDrawingOnThisPage = isDrawing && drawingPageNum === pageNum;
+
+  if (!shouldRender) {
+    return (
+      <div
+        ref={pageRef}
+        className="mb-4 relative"
+        data-page-number={pageNum}
+        style={{
+          minHeight: pageSize.height * scale || 800,
+          minWidth: pageSize.width * scale || 600,
+        }}
+      >
+        <div
+          className="flex items-center justify-center bg-slate-800 rounded-lg shadow-2xl"
+          style={{ width: pageSize.width * scale || 600, height: pageSize.height * scale || 800 }}
+        >
+          <div className="text-white/30 text-xs">Page {pageNum}</div>
+        </div>
+
+        {/* Show interactive overlay even for non-rendered pages if we have data */}
+        {hasInteractiveData && thisPageSize.width > 0 && !isInteractionDisabled && (
+          <svg
+            className="absolute top-0 left-0"
+            width={thisPageSize.width * scale}
+            height={thisPageSize.height * scale}
+            style={{
+              overflow: "visible",
+              pointerEvents: "none",
+              zIndex: 10,
+            }}
+          >
+            <SentenceHighlightLayer
+              sentences={pageSentences}
+              hoveredSentenceId={hoveredSentenceId}
+              selectedSentenceId={selectedSentenceId}
+              scale={scale}
+              onSentenceHover={onSentenceHover}
+              onSentenceClick={onSentenceClick}
+              sentenceAnnotationCounts={sentenceAnnotationCounts}
+              isAnnotationMode={isCreatingMode && selectionMode === "sentence"}
+            />
+            <FigureTableHighlightLayer
+              figureTables={pageFigureTables}
+              hoveredId={hoveredFigureTableId}
+              selectedId={selectedFigureTableId}
+              scale={scale}
+              onHover={onFigureTableHover}
+              onClick={onFigureTableClick}
+              discussionCounts={figureTableAnnotationCounts}
+              isAnnotationMode={isCreatingMode}
+              isUploader={isUploader}
+              onDelete={onRegionDeleted}
+            />
+          </svg>
+        )}
+
+        <div className="absolute bottom-2 right-2 bg-slate-800/80 text-white text-xs px-2 py-1 rounded z-20">
+          {pageNum}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      ref={pageRef}
+      className={`mb-4 relative ${isFigureTableMode && isUploader ? 'cursor-crosshair' : ''}`}
+      data-page-number={pageNum}
+      onMouseDown={handleMouseDown}
+      onMouseMove={handleMouseMove}
+      onMouseUp={handleMouseUp}
+      onMouseLeave={handleMouseUp}
+    >
+      <CachedPage
+        pageNumber={pageNum}
+        scale={scale}
+        pdfUrl={pdfUrl}
+        width={pageSize.width}
+        height={pageSize.height}
+        onLoadSuccess={handlePageLoad}
+      />
+
+      {/* SVG Overlay for this page */}
+      {thisPageSize.width > 0 && !isInteractionDisabled && (
+        <svg
+          className="absolute top-0 left-0"
+          width={thisPageSize.width * scale}
+          height={thisPageSize.height * scale}
+          style={{
+            overflow: "visible",
+            pointerEvents: "none",
+            zIndex: 10,
+          }}
+        >
+          <SentenceHighlightLayer
+            sentences={pageSentences}
+            hoveredSentenceId={hoveredSentenceId}
+            selectedSentenceId={selectedSentenceId}
+            scale={scale}
+            onSentenceHover={onSentenceHover}
+            onSentenceClick={onSentenceClick}
+            sentenceAnnotationCounts={sentenceAnnotationCounts}
+            isAnnotationMode={isCreatingMode && selectionMode === "sentence"}
+          />
+
+          <FigureTableHighlightLayer
+            figureTables={pageFigureTables}
+            hoveredId={hoveredFigureTableId}
+            selectedId={selectedFigureTableId}
+            scale={scale}
+            onHover={onFigureTableHover}
+            onClick={onFigureTableClick}
+            discussionCounts={figureTableAnnotationCounts}
+            isAnnotationMode={isCreatingMode}
+            isUploader={isUploader}
+            onDelete={onRegionDeleted}
+          />
+
+          {/* Drawing rectangle for figure/table region */}
+          {isDrawingOnThisPage && drawingRect && (
+            <rect
+              x={drawingRect.x}
+              y={drawingRect.y}
+              width={drawingRect.width}
+              height={drawingRect.height}
+              fill="rgba(16, 185, 129, 0.2)"
+              stroke="#10B981"
+              strokeWidth={2}
+              strokeDasharray="4,2"
+              className="pointer-events-none"
+            />
+          )}
+
+          {pageAnnotations.map((annotation) => (
+            <AnnotationDanmaku
+              key={annotation.id}
+              annotation={annotation}
+              isSelected={selectedAnnotationId === annotation.id}
+              onSelect={onAnnotationSelect}
+              onDelete={onAnnotationDelete}
+              onHide={onAnnotationHide}
+              onEdit={onAnnotationEdit}
+              onPositionChange={onAnnotationPositionChange}
+              scale={scale}
+              containerRef={containerRef}
+              currentUserName={currentUserName}
+              currentUserId={currentUserId}
+            />
+          ))}
+        </svg>
+      )}
+
+      <div className="absolute bottom-2 right-2 bg-slate-800/80 text-white text-xs px-2 py-1 rounded z-20">
+        {pageNum}
+      </div>
+    </div>
+  );
+});
+
 export function PdfAnnotationViewer({
   pdfUrl = "/papers/attention-paper.pdf",
   paperId,
   paperTitle,
   initialAnnotations = SAMPLE_ANNOTATIONS,
+  initialSentenceComments,
   onAnnotationAdded,
   onAnnotationDeleted,
   onCommentAdded,
@@ -206,9 +558,32 @@ export function PdfAnnotationViewer({
   const [pdfLoading, setPdfLoading] = useState<boolean>(true);
   const [pageSize, setPageSize] = useState({ width: 0, height: 0 });
   const [pageText, setPageText] = useState<string>("");
+  // Store PDF document reference for resolving destinations
+  const pdfDocRef = useRef<any>(null);
+
+  // View mode state: 'horizontal' (single page) or 'vertical' (continuous scroll)
+  const [viewMode, setViewMode] = useState<'horizontal' | 'vertical'>('horizontal');
+  // Ref for scroll container in vertical mode
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  // Refs for each page in vertical mode to track visibility
+  const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  // Store page sizes for each page in vertical mode
+  const [pageSizes, setPageSizes] = useState<Map<number, { width: number; height: number }>>(new Map());
+  // Track which pages have been rendered - once rendered, stays cached (never unloaded)
+  const [renderedPages, setRenderedPages] = useState<Set<number>>(new Set([1, 2, 3]));
+  // Track visited pages in horizontal mode to keep them cached (rendered but hidden)
+  const [visitedPages, setVisitedPages] = useState<Set<number>>(new Set([1]));
 
   // Store text items with their positions for accurate text search
   const [textItems, setTextItems] = useState<TextItem[]>([]);
+  // Store text items per page for vertical mode
+  const [textItemsPerPage, setTextItemsPerPage] = useState<Map<number, TextItem[]>>(new Map());
+  // Store sentences per page for vertical mode
+  const [sentencesPerPage, setSentencesPerPage] = useState<Map<number, Sentence[]>>(new Map());
+  // Store figure/tables per page for vertical mode
+  const [figureTablesPerPage, setFigureTablesPerPage] = useState<Map<number, FigureTable[]>>(new Map());
+  // Track pages being extracted to prevent duplicate extractions (ref to avoid stale closure issues)
+  const extractingPagesRef = useRef<Set<number>>(new Set());
 
   // Annotation state
   const [annotations, setAnnotations] = useState<Annotation[]>(initialAnnotations);
@@ -216,6 +591,7 @@ export function PdfAnnotationViewer({
   const [hiddenAnnotationIds, setHiddenAnnotationIds] = useState<Set<string>>(new Set());
   const [isCreatingMode, setIsCreatingMode] = useState(false);
   const [isFigureTableMode, setIsFigureTableMode] = useState(false); // Separate mode for Figure/Table creation
+  const [isInteractionDisabled, setIsInteractionDisabled] = useState(false); // Disable all overlays for pure reading
   const [selectionMode, setSelectionMode] = useState<SelectionMode>("sentence");
   const [pendingHighlight, setPendingHighlight] = useState<{
     x: number;
@@ -258,7 +634,9 @@ export function PdfAnnotationViewer({
   const [hoveredSentenceId, setHoveredSentenceId] = useState<string | null>(null);
   const [selectedSentenceId, setSelectedSentenceId] = useState<string | null>(null);
   const [showDiscussionPanel, setShowDiscussionPanel] = useState(false);
-  const [sentenceAnnotations, setSentenceAnnotations] = useState<Map<string, SentenceAnnotation[]>>(new Map());
+  const [sentenceAnnotations, setSentenceAnnotations] = useState<Map<string, SentenceAnnotation[]>>(
+    initialSentenceComments || new Map()
+  );
 
   // Section detection state - tracks sections across all pages
   const [allPageSections, setAllPageSections] = useState<Map<number, Section[]>>(new Map());
@@ -279,11 +657,23 @@ export function PdfAnnotationViewer({
     type: 'figure' | 'table';
     label: string;
     caption: string;
+    pageNumber?: number; // For vertical mode, track which page the region is on
   } | null>(null);
 
   // AI Document Analysis state (for "Let Agent Read" feature)
   const [isAgentReading, setIsAgentReading] = useState(false);
   const [agentHasRead, setAgentHasRead] = useState(false); // Track if agent has read entire paper
+
+  // AI Follow-up prompt template (user can customize this)
+  const [aiFollowUpPromptTemplate, setAiFollowUpPromptTemplate] = useState<string>(
+`The user has a question "{{QUESTION}}" in Section "{{SECTION}}", for sentence: "{{SENTENCE}}"
+
+{{ANALYSIS_CONTEXT}}
+
+Please answer the user's question about this sentence in the context of the paper.
+Be concise but thorough (2-4 sentences typically).
+If you don't know or the question is outside the paper's scope, say so honestly.`
+  );
   const [aiAnalysisProgress, setAiAnalysisProgress] = useState<{ current: number; total: number } | null>(null);
   const [aiError, setAiError] = useState<string | null>(null); // Error message for AI analysis
   // Store AI analysis results per sentence/figure-table (keyed by ID)
@@ -332,15 +722,27 @@ export function PdfAnnotationViewer({
   const [isDrawing, setIsDrawing] = useState(false);
   const [drawStart, setDrawStart] = useState<{ x: number; y: number } | null>(null);
   const [drawCurrent, setDrawCurrent] = useState<{ x: number; y: number } | null>(null);
+  const [drawingPageNum, setDrawingPageNum] = useState<number | null>(null); // Track which page is being drawn on in vertical mode
   const containerRef = useRef<HTMLDivElement>(null);
   const pageRef = useRef<HTMLDivElement>(null);
 
   const onDocumentLoadSuccess = useCallback(
-    ({ numPages }: { numPages: number }) => {
+    ({ numPages, _pdfInfo }: { numPages: number; _pdfInfo?: any }) => {
       setNumPages(numPages);
       setPdfLoading(false);
+      // Load PDF document for destination resolution
+      const loadPdfForDestinations = async () => {
+        try {
+          const loadingTask = pdfjs.getDocument(pdfUrl);
+          const pdf = await loadingTask.promise;
+          pdfDocRef.current = pdf;
+        } catch (error) {
+          console.error('Failed to load PDF for destinations:', error);
+        }
+      };
+      loadPdfForDestinations();
     },
-    []
+    [pdfUrl]
   );
 
   const onPageLoadSuccess = useCallback(
@@ -349,6 +751,74 @@ export function PdfAnnotationViewer({
     },
     []
   );
+
+  // Resolve a named destination to a page number using pdfjs
+  const resolveDestination = useCallback(async (dest: string | any[]): Promise<number | null> => {
+    if (!pdfDocRef.current) return null;
+
+    try {
+      let destArray = dest;
+
+      // If dest is a string, resolve it to an explicit destination array
+      if (typeof dest === 'string') {
+        destArray = await pdfDocRef.current.getDestination(dest);
+        if (!destArray) return null;
+      }
+
+      // destArray format: [pageRef, {name: 'XYZ'}, left, top, zoom]
+      // pageRef is a reference object that we need to resolve to a page index
+      if (Array.isArray(destArray) && destArray.length > 0) {
+        const pageRef = destArray[0];
+        if (pageRef && typeof pageRef === 'object') {
+          // Use getPageIndex to convert page reference to 0-based index
+          const pageIndex = await pdfDocRef.current.getPageIndex(pageRef);
+          return pageIndex + 1; // Convert to 1-based page number
+        }
+      }
+    } catch (error) {
+      console.error('Failed to resolve destination:', error);
+    }
+    return null;
+  }, []);
+
+  // Use capture phase to intercept PDF internal link clicks before react-pdf processes them
+  useEffect(() => {
+    const container = pageRef.current;
+    if (!container) return;
+
+    const handleLinkClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      // Find the anchor element or its parent linkAnnotation section
+      const anchor = target.closest('a') || target.closest('.linkAnnotation')?.querySelector('a');
+
+      if (anchor) {
+        const href = anchor.getAttribute('href');
+        const title = anchor.getAttribute('title');
+
+        // react-pdf stores target page number in the title attribute for internal links
+        // Internal links have href="#" and title contains the page number
+        if (href === '#' && title) {
+          const targetPage = parseInt(title, 10);
+          if (!isNaN(targetPage) && targetPage >= 1 && targetPage <= numPages) {
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation(); // Prevent react-pdf's handler from running
+            if (targetPage !== pageNumber) {
+              console.log(`Navigating to page ${targetPage}`);
+              setPageNumber(targetPage);
+            }
+          }
+        }
+      }
+    };
+
+    // Use capture phase to intercept before react-pdf's internal handlers
+    container.addEventListener('click', handleLinkClick, true);
+
+    return () => {
+      container.removeEventListener('click', handleLinkClick, true);
+    };
+  }, [pageNumber, numPages]);
 
   // Extract text from the current page for AI analysis - with coordinates
   useEffect(() => {
@@ -480,6 +950,141 @@ export function PdfAnnotationViewer({
     }
   }, [sentences, scale]);
 
+  // Extract text and sentences for a specific page (used in vertical mode)
+  const extractPageData = useCallback(async (targetPageNumber: number) => {
+    // Use ref to track extraction status to avoid race conditions with React state batching
+    if (!pdfUrl || extractingPagesRef.current.has(targetPageNumber)) return;
+
+    // Mark as extracting immediately
+    extractingPagesRef.current.add(targetPageNumber);
+
+    try {
+      const loadingTask = pdfjs.getDocument(pdfUrl);
+      const pdf = await loadingTask.promise;
+      const page = await pdf.getPage(targetPageNumber);
+      const textContent = await page.getTextContent();
+      const viewport = page.getViewport({ scale: 1 });
+
+      // Extract text items
+      const items: TextItem[] = [];
+      for (const item of textContent.items) {
+        const textItem = item as any;
+        if (textItem.str && textItem.str.trim()) {
+          const tx = textItem.transform;
+          const x = tx[4];
+          const y = viewport.height - tx[5];
+          const width = textItem.width || (textItem.str.length * 6);
+          const height = Math.abs(tx[3]) || 12;
+
+          items.push({
+            str: textItem.str,
+            x,
+            y: y - height,
+            width,
+            height,
+          });
+        }
+      }
+
+      // Store text items for this page
+      setTextItemsPerPage(prev => new Map(prev).set(targetPageNumber, items));
+
+      // Detect sections and segment sentences
+      const pageSections = detectSections(items, targetPageNumber);
+      allPageSectionsRef.current.set(targetPageNumber, pageSections);
+
+      const segmented = segmentSentences(items, targetPageNumber);
+      const sentencesWithSections = segmented.map(sentence => {
+        const sentenceY = sentence.bounds.minY;
+        const section = findSectionForPosition(pageSections, targetPageNumber, sentenceY, allPageSectionsRef.current);
+        if (section) {
+          return {
+            ...sentence,
+            section: {
+              number: section.number,
+              title: section.title,
+              fullTitle: section.fullTitle,
+            },
+          };
+        }
+        return sentence;
+      });
+
+      setSentencesPerPage(prev => new Map(prev).set(targetPageNumber, sentencesWithSections));
+
+      // Convert figure/table regions for this page
+      const pageRegions = figureTableRegions.filter(r => r.pageNumber === targetPageNumber);
+      const converted: FigureTable[] = pageRegions.map(r => ({
+        id: r.id,
+        type: r.type,
+        label: r.label,
+        caption: r.caption || '',
+        pageNumber: r.pageNumber,
+        boundingRect: r.boundingRect,
+        bounds: {
+          minX: r.boundingRect.x,
+          minY: r.boundingRect.y,
+          maxX: r.boundingRect.x + r.boundingRect.width,
+          maxY: r.boundingRect.y + r.boundingRect.height,
+        },
+      }));
+      setFigureTablesPerPage(prev => new Map(prev).set(targetPageNumber, converted));
+    } catch (error) {
+      console.error(`Failed to extract text for page ${targetPageNumber}:`, error);
+      // Remove from extracting set on error so it can be retried
+      extractingPagesRef.current.delete(targetPageNumber);
+    }
+  }, [pdfUrl, figureTableRegions]);
+
+  // Reset extracting pages ref when PDF changes
+  useEffect(() => {
+    extractingPagesRef.current = new Set();
+  }, [pdfUrl]);
+
+  // In vertical mode, extract data for all pages in parallel
+  useEffect(() => {
+    if (viewMode !== 'vertical' || numPages === 0) return;
+
+    // Extract data for all pages in parallel for faster loading
+    const extractAllPages = async () => {
+      // Create array of page numbers
+      const pages = Array.from({ length: numPages }, (_, i) => i + 1);
+      // Run all extractions in parallel (with a reasonable concurrency limit)
+      const batchSize = 5; // Process 5 pages at a time to avoid overwhelming the browser
+      for (let i = 0; i < pages.length; i += batchSize) {
+        const batch = pages.slice(i, i + batchSize);
+        await Promise.all(batch.map(pageNum => extractPageData(pageNum)));
+      }
+    };
+    extractAllPages();
+  }, [viewMode, numPages, extractPageData]);
+
+  // Update figureTablesPerPage when figureTableRegions change
+  useEffect(() => {
+    if (viewMode !== 'vertical') return;
+
+    const newMap = new Map<number, FigureTable[]>();
+    for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+      const pageRegions = figureTableRegions.filter(r => r.pageNumber === pageNum);
+      const converted: FigureTable[] = pageRegions.map(r => ({
+        id: r.id,
+        type: r.type,
+        label: r.label,
+        caption: r.caption || '',
+        pageNumber: r.pageNumber,
+        boundingRect: r.boundingRect,
+        bounds: {
+          minX: r.boundingRect.x,
+          minY: r.boundingRect.y,
+          maxX: r.boundingRect.x + r.boundingRect.width,
+          maxY: r.boundingRect.y + r.boundingRect.height,
+        },
+      }));
+      newMap.set(pageNum, converted);
+    }
+    setFigureTablesPerPage(newMap);
+  }, [viewMode, figureTableRegions, numPages]);
+
   // Search for text in the PDF and return its bounding box coordinates
   const searchTextInPdf = useCallback((searchText: string): { x: number; y: number; width: number; height: number } | null => {
     if (!textItems.length || !searchText.trim()) return null;
@@ -594,8 +1199,110 @@ export function PdfAnnotationViewer({
     [numPages]
   );
 
+  // Handle scroll in vertical mode to track current page and add pages to render cache
+  const handleVerticalScroll = useCallback(() => {
+    if (viewMode !== 'vertical' || !scrollContainerRef.current) return;
+
+    const container = scrollContainerRef.current;
+    const containerRect = container.getBoundingClientRect();
+    const containerMiddle = containerRect.top + containerRect.height / 3; // Check top third for better UX
+
+    let currentVisiblePage = 1;
+    let minDistance = Infinity;
+    const pagesToAdd: number[] = [];
+
+    // Find the page closest to the top third of the viewport and track pages to render
+    pageRefs.current.forEach((element, pageNum) => {
+      const rect = element.getBoundingClientRect();
+      const pageMiddle = rect.top + rect.height / 2;
+      const distance = Math.abs(pageMiddle - containerMiddle);
+
+      // Check if page is in view (with buffer for preloading)
+      const bufferHeight = containerRect.height * 2; // Preload pages within two viewport heights
+      const isNearView = rect.bottom > containerRect.top - bufferHeight &&
+                         rect.top < containerRect.bottom + bufferHeight;
+
+      if (isNearView) {
+        pagesToAdd.push(pageNum);
+      }
+
+      // Also check if page is actually in view for current page detection
+      const isInView = rect.bottom > containerRect.top && rect.top < containerRect.bottom;
+
+      if (isInView && distance < minDistance) {
+        minDistance = distance;
+        currentVisiblePage = pageNum;
+      }
+    });
+
+    // Add newly visible pages to render cache (never remove - pages stay rendered once loaded)
+    if (pagesToAdd.length > 0) {
+      setRenderedPages(prev => {
+        const hasNewPages = pagesToAdd.some(p => !prev.has(p));
+        if (!hasNewPages) return prev; // No change needed
+        const newSet = new Set(prev);
+        pagesToAdd.forEach(p => newSet.add(p));
+        return newSet;
+      });
+    }
+
+    if (currentVisiblePage !== pageNumber) {
+      setPageNumber(currentVisiblePage);
+    }
+  }, [viewMode, pageNumber]);
+
+  // Initialize rendered pages and scroll when switching to vertical mode
+  useEffect(() => {
+    if (viewMode === 'vertical') {
+      // Initialize rendered pages around current page (wider range for smooth initial experience)
+      const initialRendered = new Set<number>();
+      for (let i = Math.max(1, pageNumber - 3); i <= Math.min(numPages, pageNumber + 5); i++) {
+        initialRendered.add(i);
+      }
+      setRenderedPages(initialRendered);
+
+      // Small delay to ensure pages are rendered, then scroll to current page
+      const timer = setTimeout(() => {
+        const element = pageRefs.current.get(pageNumber);
+        if (element && scrollContainerRef.current) {
+          element.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      }, 100);
+      return () => clearTimeout(timer);
+    }
+  }, [viewMode, numPages]); // Only trigger when viewMode changes, not pageNumber
+
   const changeScale = useCallback((delta: number) => {
     setScale((prevScale) => Math.max(0.5, Math.min(prevScale + delta, 1.5)));
+  }, []);
+
+  // Track visited pages for caching in horizontal mode - all visited pages stay cached
+  useEffect(() => {
+    if (viewMode === 'horizontal' && pageNumber > 0) {
+      setVisitedPages(prev => {
+        if (prev.has(pageNumber)) return prev;
+        const newSet = new Set(prev);
+        newSet.add(pageNumber);
+        return newSet;
+      });
+    }
+  }, [pageNumber, viewMode]);
+
+  // Callback for setting page refs in vertical mode (used by VerticalPageWrapper)
+  const setPageRefCallback = useCallback((pageNum: number, el: HTMLDivElement | null) => {
+    if (el) {
+      pageRefs.current.set(pageNum, el);
+    } else {
+      pageRefs.current.delete(pageNum);
+    }
+  }, []);
+
+  // Callback for page load in vertical mode (used by VerticalPageWrapper)
+  const handleVerticalPageLoad = useCallback((pageNum: number, page: any) => {
+    setPageSizes(prev => new Map(prev).set(pageNum, {
+      width: page.originalWidth,
+      height: page.originalHeight,
+    }));
   }, []);
 
   // Handle mouse events for drawing selection (region mode or figure-table mode)
@@ -672,7 +1379,57 @@ export function PdfAnnotationViewer({
     setIsDrawing(false);
     setDrawStart(null);
     setDrawCurrent(null);
+    setDrawingPageNum(null);
   }, [isDrawing, drawStart, drawCurrent, isFigureTableMode, isUploader]);
+
+  // Vertical mode drawing callbacks (for figure/table region creation)
+  const handleVerticalDrawStart = useCallback((pageNum: number, x: number, y: number) => {
+    setIsDrawing(true);
+    setDrawStart({ x, y });
+    setDrawCurrent({ x, y });
+    setDrawingPageNum(pageNum);
+  }, []);
+
+  const handleVerticalDrawMove = useCallback((x: number, y: number) => {
+    if (!isDrawing) return;
+    setDrawCurrent({ x, y });
+  }, [isDrawing]);
+
+  const handleVerticalDrawEnd = useCallback(() => {
+    if (!isDrawing || !drawStart || !drawCurrent || drawingPageNum === null) {
+      setIsDrawing(false);
+      setDrawStart(null);
+      setDrawCurrent(null);
+      setDrawingPageNum(null);
+      return;
+    }
+
+    const minX = Math.min(drawStart.x, drawCurrent.x);
+    const minY = Math.min(drawStart.y, drawCurrent.y);
+    const width = Math.abs(drawCurrent.x - drawStart.x);
+    const height = Math.abs(drawCurrent.y - drawStart.y);
+
+    // Only create region if it's big enough
+    if (width > 20 && height > 10) {
+      if (isFigureTableMode && isUploader) {
+        setPendingRegion({
+          x: minX,
+          y: minY,
+          width,
+          height,
+          type: 'figure',
+          label: '',
+          caption: '',
+          pageNumber: drawingPageNum,
+        });
+      }
+    }
+
+    setIsDrawing(false);
+    setDrawStart(null);
+    setDrawCurrent(null);
+    setDrawingPageNum(null);
+  }, [isDrawing, drawStart, drawCurrent, drawingPageNum, isFigureTableMode, isUploader]);
 
   // Add annotation handler
   const handleAddAnnotation = useCallback(
@@ -699,6 +1456,25 @@ export function PdfAnnotationViewer({
     // Call the callback if provided
     onAnnotationDeleted?.(id);
   }, [onAnnotationDeleted]);
+
+  // Edit annotation handler
+  const handleEditAnnotation = useCallback(async (id: string, newText: string, newLatex?: string) => {
+    // Update local state
+    setAnnotations((prev) =>
+      prev.map((a) =>
+        a.id === id ? { ...a, text: newText, latex: newLatex } : a
+      )
+    );
+    // If we have a paper ID, save to server
+    if (paperId) {
+      try {
+        await api.updateAnnotation(paperId, id, { text: newText, latex: newLatex });
+      } catch (error) {
+        console.error('Failed to save annotation edit:', error);
+        toast.error('Failed to save changes');
+      }
+    }
+  }, [paperId]);
 
   // Hide annotation handler (for others' annotations)
   const handleHideAnnotation = useCallback((id: string) => {
@@ -780,9 +1556,20 @@ export function PdfAnnotationViewer({
 
   // Sentence annotation handlers
   const handleSentenceClick = useCallback((sentenceId: string) => {
+    // Find sentence - in vertical mode, search all pages; in horizontal mode, search current page
+    let sentence: Sentence | undefined;
+    if (viewMode === 'vertical') {
+      // Search across all pages
+      for (const pageSentences of Array.from(sentencesPerPage.values())) {
+        sentence = pageSentences.find((s: Sentence) => s.id === sentenceId);
+        if (sentence) break;
+      }
+    } else {
+      sentence = sentences.find(s => s.id === sentenceId);
+    }
+
     // If in annotation creation mode with sentence selection, create pending highlight from sentence
     if (isCreatingMode && selectionMode === "sentence") {
-      const sentence = sentences.find(s => s.id === sentenceId);
       if (sentence && sentence.bounds) {
         // Create pending highlight from sentence bounds with full sentence data
         setPendingHighlight({
@@ -809,7 +1596,7 @@ export function PdfAnnotationViewer({
     // Normal mode: open discussion panel
     setSelectedSentenceId(sentenceId);
     setShowDiscussionPanel(true);
-  }, [isCreatingMode, selectionMode, sentences]);
+  }, [isCreatingMode, selectionMode, sentences, viewMode, sentencesPerPage]);
 
   const handleAddSentenceAnnotation = useCallback(
     (annotation: Omit<SentenceAnnotation, 'id' | 'timestamp'>) => {
@@ -848,8 +1635,8 @@ export function PdfAnnotationViewer({
       };
       setSentenceAnnotations((prev) => {
         const newMap = new Map(prev);
-        for (const [sentenceId, annotations] of newMap.entries()) {
-          const updated = annotations.map((a) => {
+        for (const [sentenceId, annotations] of Array.from(newMap.entries())) {
+          const updated = annotations.map((a: SentenceAnnotation) => {
             if (a.id === annotationId) {
               return { ...a, replies: [...a.replies, newReply] };
             }
@@ -876,8 +1663,8 @@ export function PdfAnnotationViewer({
   const handleDeleteSentenceAnnotation = useCallback((annotationId: string) => {
     setSentenceAnnotations((prev) => {
       const newMap = new Map(prev);
-      for (const [sentenceId, annotations] of newMap.entries()) {
-        const filtered = annotations.filter((a) => a.id !== annotationId);
+      for (const [sentenceId, annotations] of Array.from(newMap.entries())) {
+        const filtered = annotations.filter((a: SentenceAnnotation) => a.id !== annotationId);
         if (filtered.length !== annotations.length) {
           newMap.set(sentenceId, filtered);
         }
@@ -892,10 +1679,10 @@ export function PdfAnnotationViewer({
   const handleDeleteSentenceReply = useCallback((annotationId: string, replyId: string) => {
     setSentenceAnnotations((prev) => {
       const newMap = new Map(prev);
-      for (const [sentenceId, annotations] of newMap.entries()) {
-        const updated = annotations.map((a) => {
+      for (const [sentenceId, annotations] of Array.from(newMap.entries())) {
+        const updated = annotations.map((a: SentenceAnnotation) => {
           if (a.id === annotationId) {
-            return { ...a, replies: a.replies.filter((r) => r.id !== replyId) };
+            return { ...a, replies: a.replies.filter((r: SentenceAnnotationReply) => r.id !== replyId) };
           }
           return a;
         });
@@ -906,6 +1693,63 @@ export function PdfAnnotationViewer({
     // Call API to delete reply from backend
     onCommentDeleted?.(replyId);
   }, [onCommentDeleted]);
+
+  // Edit sentence annotation handler
+  const handleEditSentenceAnnotation = useCallback(async (annotationId: string, newText: string) => {
+    setSentenceAnnotations((prev) => {
+      const newMap = new Map(prev);
+      for (const [sentenceId, annotations] of Array.from(newMap.entries())) {
+        const updated = annotations.map((a: SentenceAnnotation) => {
+          if (a.id === annotationId) {
+            return { ...a, text: newText };
+          }
+          return a;
+        });
+        newMap.set(sentenceId, updated);
+      }
+      return newMap;
+    });
+    // Call API to update on backend
+    if (paperId) {
+      try {
+        await api.updateAnnotation(paperId, annotationId, { text: newText });
+      } catch (error) {
+        console.error('Failed to save comment edit:', error);
+        toast.error('Failed to save changes');
+      }
+    }
+  }, [paperId]);
+
+  // Edit sentence reply handler
+  const handleEditSentenceReply = useCallback(async (annotationId: string, replyId: string, newText: string) => {
+    setSentenceAnnotations((prev) => {
+      const newMap = new Map(prev);
+      for (const [sentenceId, annotations] of Array.from(newMap.entries())) {
+        const updated = annotations.map((a: SentenceAnnotation) => {
+          if (a.id === annotationId) {
+            return {
+              ...a,
+              replies: a.replies.map((r: SentenceAnnotationReply) =>
+                r.id === replyId ? { ...r, text: newText } : r
+              ),
+            };
+          }
+          return a;
+        });
+        newMap.set(sentenceId, updated);
+      }
+      return newMap;
+    });
+    // Call API to update on backend
+    if (paperId) {
+      try {
+        await api.updateAnnotation(paperId, replyId, { text: newText });
+      } catch (error) {
+        console.error('Failed to save reply edit:', error);
+        toast.error('Failed to save changes');
+      }
+    }
+  }, [paperId]);
 
   // Compute annotation counts per sentence
   const sentenceAnnotationCounts = useMemo(() => {
@@ -919,7 +1763,18 @@ export function PdfAnnotationViewer({
   // Get selected sentence object with AI analysis data
   const selectedSentence = useMemo(() => {
     if (!selectedSentenceId) return null;
-    const sentence = sentences.find((s) => s.id === selectedSentenceId);
+
+    // In vertical mode, search across all pages; in horizontal mode, search current page
+    let sentence: Sentence | undefined;
+    if (viewMode === 'vertical') {
+      for (const pageSentences of Array.from(sentencesPerPage.values())) {
+        sentence = pageSentences.find((s: Sentence) => s.id === selectedSentenceId);
+        if (sentence) break;
+      }
+    } else {
+      sentence = sentences.find((s) => s.id === selectedSentenceId);
+    }
+
     if (!sentence) return null;
 
     // Add AI label from analysis if available
@@ -931,7 +1786,7 @@ export function PdfAnnotationViewer({
       };
     }
     return sentence;
-  }, [selectedSentenceId, sentences, aiSentenceAnalysis]);
+  }, [selectedSentenceId, sentences, aiSentenceAnalysis, viewMode, sentencesPerPage]);
 
   // Get annotations for selected sentence, including AI analysis as first annotation
   const selectedSentenceAnnotations = useMemo(() => {
@@ -943,12 +1798,14 @@ export function PdfAnnotationViewer({
     const aiAnalysis = aiSentenceAnalysis.get(selectedSentenceId);
     if (aiAnalysis) {
       // Create AI annotation - if there's a comment use it, otherwise show label description
+      // Use a very early timestamp (epoch start) so the initial AI analysis always appears first
+      // This distinguishes it from @AI follow-up responses which get current timestamps
       const aiAnnotation: SentenceAnnotation = {
         id: `ai-${selectedSentenceId}`,
         sentenceId: selectedSentenceId,
         text: aiAnalysis.comment || `This sentence has been classified as "${aiAnalysis.label}".`,
         userName: 'AI Reviewer',
-        timestamp: new Date(),
+        timestamp: new Date(0), // Epoch start - ensures this appears first in chronological sort
         replies: [],
         isAI: true,
         aiSentenceLabel: aiAnalysis.label as SentenceLabel,
@@ -961,9 +1818,19 @@ export function PdfAnnotationViewer({
 
   // Figure/Table annotation handlers
   const handleFigureTableClick = useCallback((figureTableId: string) => {
+    // Find figure/table - in vertical mode, search all pages; in horizontal mode, search current page
+    let ft: FigureTable | undefined;
+    if (viewMode === 'vertical') {
+      for (const pageFTs of Array.from(figureTablesPerPage.values())) {
+        ft = pageFTs.find((f: FigureTable) => f.id === figureTableId);
+        if (ft) break;
+      }
+    } else {
+      ft = figureTables.find(f => f.id === figureTableId);
+    }
+
     // If in annotation creation mode, create pending highlight from figure/table
     if (isCreatingMode) {
-      const ft = figureTables.find(f => f.id === figureTableId);
       if (ft) {
         // Create pending highlight from figure/table bounds
         setPendingHighlight({
@@ -990,7 +1857,7 @@ export function PdfAnnotationViewer({
     // Normal mode: open discussion panel
     setSelectedFigureTableId(figureTableId);
     setShowFigureTableDiscussionPanel(true);
-  }, [isCreatingMode, figureTables]);
+  }, [isCreatingMode, figureTables, viewMode, figureTablesPerPage]);
 
   const handleAddFigureTableAnnotation = useCallback(
     (annotation: Omit<FigureTableAnnotation, 'id' | 'timestamp'>) => {
@@ -1029,8 +1896,8 @@ export function PdfAnnotationViewer({
       };
       setFigureTableAnnotations((prev) => {
         const newMap = new Map(prev);
-        for (const [ftId, annotations] of newMap.entries()) {
-          const updated = annotations.map((a) => {
+        for (const [ftId, annotations] of Array.from(newMap.entries())) {
+          const updated = annotations.map((a: FigureTableAnnotation) => {
             if (a.id === annotationId) {
               return { ...a, replies: [...a.replies, newReply] };
             }
@@ -1057,8 +1924,8 @@ export function PdfAnnotationViewer({
   const handleDeleteFigureTableAnnotation = useCallback((annotationId: string) => {
     setFigureTableAnnotations((prev) => {
       const newMap = new Map(prev);
-      for (const [ftId, annotations] of newMap.entries()) {
-        const filtered = annotations.filter((a) => a.id !== annotationId);
+      for (const [ftId, annotations] of Array.from(newMap.entries())) {
+        const filtered = annotations.filter((a: FigureTableAnnotation) => a.id !== annotationId);
         if (filtered.length !== annotations.length) {
           newMap.set(ftId, filtered);
         }
@@ -1073,10 +1940,10 @@ export function PdfAnnotationViewer({
   const handleDeleteFigureTableReply = useCallback((annotationId: string, replyId: string) => {
     setFigureTableAnnotations((prev) => {
       const newMap = new Map(prev);
-      for (const [ftId, annotations] of newMap.entries()) {
-        const updated = annotations.map((a) => {
+      for (const [ftId, annotations] of Array.from(newMap.entries())) {
+        const updated = annotations.map((a: FigureTableAnnotation) => {
           if (a.id === annotationId) {
-            return { ...a, replies: a.replies.filter((r) => r.id !== replyId) };
+            return { ...a, replies: a.replies.filter((r: SentenceAnnotationReply) => r.id !== replyId) };
           }
           return a;
         });
@@ -1087,6 +1954,63 @@ export function PdfAnnotationViewer({
     // Call API to delete reply from backend
     onCommentDeleted?.(replyId);
   }, [onCommentDeleted]);
+
+  // Edit figure/table annotation handler
+  const handleEditFigureTableAnnotation = useCallback(async (annotationId: string, newText: string) => {
+    setFigureTableAnnotations((prev) => {
+      const newMap = new Map(prev);
+      for (const [ftId, annotations] of Array.from(newMap.entries())) {
+        const updated = annotations.map((a: FigureTableAnnotation) => {
+          if (a.id === annotationId) {
+            return { ...a, text: newText };
+          }
+          return a;
+        });
+        newMap.set(ftId, updated);
+      }
+      return newMap;
+    });
+    // Call API to update on backend
+    if (paperId) {
+      try {
+        await api.updateAnnotation(paperId, annotationId, { text: newText });
+      } catch (error) {
+        console.error('Failed to save comment edit:', error);
+        toast.error('Failed to save changes');
+      }
+    }
+  }, [paperId]);
+
+  // Edit figure/table reply handler
+  const handleEditFigureTableReply = useCallback(async (annotationId: string, replyId: string, newText: string) => {
+    setFigureTableAnnotations((prev) => {
+      const newMap = new Map(prev);
+      for (const [ftId, annotations] of Array.from(newMap.entries())) {
+        const updated = annotations.map((a: FigureTableAnnotation) => {
+          if (a.id === annotationId) {
+            return {
+              ...a,
+              replies: a.replies.map((r: SentenceAnnotationReply) =>
+                r.id === replyId ? { ...r, text: newText } : r
+              ),
+            };
+          }
+          return a;
+        });
+        newMap.set(ftId, updated);
+      }
+      return newMap;
+    });
+    // Call API to update on backend
+    if (paperId) {
+      try {
+        await api.updateAnnotation(paperId, replyId, { text: newText });
+      } catch (error) {
+        console.error('Failed to save reply edit:', error);
+        toast.error('Failed to save changes');
+      }
+    }
+  }, [paperId]);
 
   // Compute annotation counts per figure/table
   const figureTableAnnotationCounts = useMemo(() => {
@@ -1129,20 +2053,18 @@ export function PdfAnnotationViewer({
     // Get the AI analysis for this sentence if available
     const sentenceAnalysis = aiSentenceAnalysis.get(sentenceId);
     const analysisContext = sentenceAnalysis
-      ? `\n\nAI's previous analysis of this sentence:\n- Label: ${sentenceAnalysis.label}\n- Comment: ${sentenceAnalysis.comment || 'No specific comment'}\n- Flags: ${JSON.stringify(sentenceAnalysis.flags || {})}`
-      : '';
+      ? `AI's previous analysis of this sentence:\n- Label: ${sentenceAnalysis.label}\n- Comment: ${sentenceAnalysis.comment || 'No specific comment'}\n- Flags: ${JSON.stringify(sentenceAnalysis.flags || {})}`
+      : 'No previous AI analysis for this sentence.';
 
-    // Build the context for the chat
-    const context = `The user has a follow-up question about this sentence from the paper:
+    // Build the context using the user's template
+    // Replace placeholders with actual values
+    const context = aiFollowUpPromptTemplate
+      .replace('{{QUESTION}}', question)
+      .replace('{{SECTION}}', sectionInfo || 'Unknown Section')
+      .replace('{{SENTENCE}}', sentenceText)
+      .replace('{{ANALYSIS_CONTEXT}}', analysisContext);
 
-=== SENTENCE ===
-"${sentenceText}"
-${sectionInfo ? `\nSection: ${sectionInfo}` : ''}
-${analysisContext}
-
-Please answer the user's question about this sentence in the context of the paper.
-Be concise but thorough (2-4 sentences typically).
-If you don't know or the question is outside the paper's scope, say so honestly.`;
+    console.log('[AI Follow-up] Using prompt template:\n', context);
 
     // Use server-side chat API which uses the session's encrypted API key
     const result = await api.chatWithAgent(
@@ -1158,7 +2080,7 @@ If you don't know or the question is outside the paper's scope, say so honestly.
     }
 
     return result.response.trim();
-  }, [paperId, activeSession, aiSentenceAnalysis, onSessionUpdated]);
+  }, [paperId, activeSession, aiSentenceAnalysis, onSessionUpdated, aiFollowUpPromptTemplate]);
 
   // "Let Agent Read" handler - analyzes ENTIRE paper page by page using the active session's API key
   const handleLetAgentRead = useCallback(async () => {
@@ -1486,7 +2408,18 @@ If you don't know or the question is outside the paper's scope, say so honestly.
   // Get selected figure/table object with AI analysis data
   const selectedFigureTable = useMemo(() => {
     if (!selectedFigureTableId) return null;
-    const ft = figureTables.find((ft) => ft.id === selectedFigureTableId);
+
+    // In vertical mode, search across all pages; in horizontal mode, search current page
+    let ft: FigureTable | undefined;
+    if (viewMode === 'vertical') {
+      for (const pageFTs of Array.from(figureTablesPerPage.values())) {
+        ft = pageFTs.find((f: FigureTable) => f.id === selectedFigureTableId);
+        if (ft) break;
+      }
+    } else {
+      ft = figureTables.find((f) => f.id === selectedFigureTableId);
+    }
+
     if (!ft) return null;
 
     // Add AI label from analysis if available
@@ -1498,7 +2431,7 @@ If you don't know or the question is outside the paper's scope, say so honestly.
       };
     }
     return ft;
-  }, [selectedFigureTableId, figureTables, aiFigureTableAnalysis]);
+  }, [selectedFigureTableId, figureTables, aiFigureTableAnalysis, viewMode, figureTablesPerPage]);
 
   // Get annotations for selected figure/table, including AI analysis as first annotation
   const selectedFigureTableAnnotations = useMemo(() => {
@@ -1551,6 +2484,7 @@ If you don't know or the question is outside the paper's scope, say so honestly.
         selectedAnnotationId={selectedAnnotationId}
         onSelectAnnotation={setSelectedAnnotationId}
         onDeleteAnnotation={handleDeleteAnnotation}
+        onEditAnnotation={handleEditAnnotation}
         onHideAnnotation={handleHideAnnotation}
         onUnhideAnnotation={handleUnhideAnnotation}
         hiddenAnnotationIds={hiddenAnnotationIds}
@@ -1563,6 +2497,8 @@ If you don't know or the question is outside the paper's scope, say so honestly.
           setSelectedSentenceId(null);
           window.getSelection()?.removeAllRanges();
         }}
+        isInteractionDisabled={isInteractionDisabled}
+        onEnableInteraction={() => setIsInteractionDisabled(false)}
         pendingHighlight={pendingHighlight}
         onClearPendingHighlight={() => {
           setPendingHighlight(null);
@@ -1590,7 +2526,7 @@ If you don't know or the question is outside the paper's scope, say so honestly.
               variant="ghost"
               size="sm"
               onClick={() => changePage(-1)}
-              disabled={pageNumber <= 1}
+              disabled={viewMode === 'vertical' || pageNumber <= 1}
               className="text-white hover:bg-slate-700 h-8 px-2"
             >
               <ChevronLeft className="w-4 h-4" />
@@ -1602,13 +2538,44 @@ If you don't know or the question is outside the paper's scope, say so honestly.
               variant="ghost"
               size="sm"
               onClick={() => changePage(1)}
-              disabled={pageNumber >= numPages}
+              disabled={viewMode === 'vertical' || pageNumber >= numPages}
               className="text-white hover:bg-slate-700 h-8 px-2"
             >
               <ChevronRight className="w-4 h-4" />
             </Button>
+
+            {/* View mode toggle */}
+            <div className="w-px h-6 bg-slate-600 mx-1" />
+            <div className="flex items-center gap-0.5 bg-slate-700 rounded-lg p-0.5">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setViewMode('horizontal')}
+                className={`h-7 px-2 ${
+                  viewMode === 'horizontal'
+                    ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                    : 'text-slate-300 hover:bg-slate-600'
+                }`}
+                title="Single page view"
+              >
+                <GalleryHorizontal className="w-4 h-4" />
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setViewMode('vertical')}
+                className={`h-7 px-2 ${
+                  viewMode === 'vertical'
+                    ? 'bg-indigo-600 text-white hover:bg-indigo-700'
+                    : 'text-slate-300 hover:bg-slate-600'
+                }`}
+                title="Continuous scroll view"
+              >
+                <Rows3 className="w-4 h-4" />
+              </Button>
+            </div>
           </div>
-          
+
           {/* Selection mode toggle - only shown in annotation creating mode */}
           {isCreatingMode && (
             <div className="flex items-center gap-1 bg-slate-700 rounded-lg p-1">
@@ -1676,7 +2643,33 @@ If you don't know or the question is outside the paper's scope, say so honestly.
             >
               <ZoomIn className="w-4 h-4" />
             </Button>
-            
+
+            {/* Disable Interaction Toggle */}
+            <div className="w-px h-6 bg-slate-600 mx-2" />
+            <Button
+              variant={isInteractionDisabled ? "default" : "ghost"}
+              size="sm"
+              onClick={() => setIsInteractionDisabled(!isInteractionDisabled)}
+              className={`h-8 px-3 gap-1.5 ${
+                isInteractionDisabled
+                  ? "bg-amber-600 hover:bg-amber-700 text-white"
+                  : "text-white hover:bg-slate-700"
+              }`}
+              title={isInteractionDisabled ? "Enable interactions (highlights, comments)" : "Disable interactions for pure reading"}
+            >
+              {isInteractionDisabled ? (
+                <>
+                  <Hand className="w-4 h-4" />
+                  <span className="text-xs font-medium hidden sm:inline">Reading Mode</span>
+                </>
+              ) : (
+                <>
+                  <MousePointer2 className="w-4 h-4" />
+                  <span className="text-xs font-medium hidden sm:inline">Interactive</span>
+                </>
+              )}
+            </Button>
+
             {/* Let Agent Read Button */}
             <div className="w-px h-6 bg-slate-600 mx-2" />
             {isAgentReading ? (
@@ -1772,7 +2765,11 @@ If you don't know or the question is outside the paper's scope, say so honestly.
         </div>
 
         {/* PDF Content with Annotations */}
-        <div className="flex-1 overflow-auto bg-slate-900 flex justify-center p-4">
+        <div
+          ref={scrollContainerRef}
+          className="flex-1 overflow-auto bg-slate-900 flex justify-center p-4"
+          onScroll={viewMode === 'vertical' ? handleVerticalScroll : undefined}
+        >
           {pdfLoading && (
             <div className="flex items-center justify-center h-full">
               <div className="text-white/50 flex flex-col items-center gap-3">
@@ -1782,24 +2779,31 @@ If you don't know or the question is outside the paper's scope, say so honestly.
             </div>
           )}
 
+          {/* Single Document component for both modes to avoid worker conflicts */}
           <div
             ref={containerRef}
-            className={`relative ${(isCreatingMode && selectionMode === "region") || isFigureTableMode ? "cursor-crosshair" : ""}`}
-            onMouseDown={handleMouseDown}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-            onMouseLeave={() => {
+            className={`relative ${viewMode === 'vertical' ? 'flex flex-col items-center gap-4' : ''} ${(isCreatingMode && selectionMode === "region") || isFigureTableMode ? "cursor-crosshair" : ""}`}
+            onMouseDown={viewMode === 'horizontal' ? handleMouseDown : undefined}
+            onMouseMove={viewMode === 'horizontal' ? handleMouseMove : undefined}
+            onMouseUp={viewMode === 'horizontal' ? handleMouseUp : undefined}
+            onMouseLeave={viewMode === 'horizontal' ? () => {
               if (isDrawing) {
                 setIsDrawing(false);
                 setDrawStart(null);
                 setDrawCurrent(null);
               }
-            }}
+            } : undefined}
           >
-            <div ref={pageRef} className="pdf-container">
+            <div ref={pageRef} className={viewMode === 'horizontal' ? "pdf-container" : ""}>
+              {/* Single Document component for both modes to avoid worker conflicts */}
               <Document
                 file={pdfUrl}
                 onLoadSuccess={onDocumentLoadSuccess}
+                onItemClick={({ pageNumber: targetPage }) => {
+                  if (targetPage && targetPage !== pageNumber) {
+                    setPageNumber(targetPage);
+                  }
+                }}
                 loading={null}
                 error={
                   <div className="flex items-center justify-center h-64">
@@ -1811,105 +2815,169 @@ If you don't know or the question is outside the paper's scope, say so honestly.
                     </div>
                   </div>
                 }
-                className="flex justify-center"
+                className={viewMode === 'horizontal' ? "flex justify-center" : ""}
               >
-                <Page
-                  pageNumber={pageNumber}
-                  scale={scale}
-                  renderTextLayer={true}
-                  renderAnnotationLayer={true}
-                  className="shadow-2xl pdf-page-with-text"
-                  loading={null}
-                  onLoadSuccess={onPageLoadSuccess}
-                />
-              </Document>
-            </div>
-
-            {/* SVG Overlay for Annotations - positioned to not block text selection */}
-            {pageSize.width > 0 && (
-              <svg
-                className="absolute top-0 left-0"
-                width={pageSize.width * scale}
-                height={pageSize.height * scale}
-                style={{ 
-                  overflow: "visible", 
-                  pointerEvents: "none",
-                  zIndex: 10,
-                }}
-              >
-                {/* Sentence highlight layer - rendered below annotations */}
-                <SentenceHighlightLayer
-                  sentences={sentences}
-                  hoveredSentenceId={hoveredSentenceId}
-                  selectedSentenceId={selectedSentenceId}
-                  scale={scale}
-                  onSentenceHover={setHoveredSentenceId}
-                  onSentenceClick={handleSentenceClick}
-                  sentenceAnnotationCounts={sentenceAnnotationCounts}
-                  isAnnotationMode={isCreatingMode && selectionMode === "sentence"}
-                />
-
-                {/* Figure/Table highlight layer */}
-                <FigureTableHighlightLayer
-                  figureTables={figureTables}
-                  hoveredId={hoveredFigureTableId}
-                  selectedId={selectedFigureTableId}
-                  scale={scale}
-                  onHover={setHoveredFigureTableId}
-                  onClick={handleFigureTableClick}
-                  discussionCounts={figureTableAnnotationCounts}
-                  isAnnotationMode={isCreatingMode}
-                  isUploader={isUploader}
-                  onDelete={onRegionDeleted}
-                />
-
-                {/* Render existing annotations */}
-                {pageAnnotations.map((annotation) => (
-                  <AnnotationDanmaku
-                    key={annotation.id}
-                    annotation={annotation}
-                    isSelected={selectedAnnotationId === annotation.id}
-                    onSelect={setSelectedAnnotationId}
-                    onDelete={handleDeleteAnnotation}
-                    onHide={handleHideAnnotation}
-                    onPositionChange={handlePositionChange}
-                    scale={scale}
-                    containerRef={containerRef as React.RefObject<HTMLElement>}
-                    currentUserName={currentUserName}
-                    currentUserId={currentUserId}
-                  />
+                {/* Horizontal mode: render all visited pages, show only current */}
+                {viewMode === 'horizontal' && Array.from(visitedPages).map((visitedPageNum) => (
+                  <div
+                    key={visitedPageNum}
+                    style={{
+                      display: visitedPageNum === pageNumber ? 'block' : 'none',
+                      position: visitedPageNum === pageNumber ? 'relative' : 'absolute',
+                      visibility: visitedPageNum === pageNumber ? 'visible' : 'hidden',
+                    }}
+                  >
+                    <CachedPage
+                      pageNumber={visitedPageNum}
+                      scale={scale}
+                      pdfUrl={pdfUrl}
+                      width={pageSize.width}
+                      height={pageSize.height}
+                      onLoadSuccess={visitedPageNum === pageNumber ? onPageLoadSuccess : undefined}
+                    />
+                  </div>
                 ))}
 
-                {/* Drawing rectangle */}
-                {isDrawing && drawingRect && (
-                  <rect
-                    x={drawingRect.x}
-                    y={drawingRect.y}
-                    width={drawingRect.width}
-                    height={drawingRect.height}
-                    fill={isFigureTableMode ? "rgba(16, 185, 129, 0.2)" : "rgba(59, 130, 246, 0.2)"}
-                    stroke={isFigureTableMode ? "#10B981" : "#3B82F6"}
-                    strokeWidth={2}
-                    strokeDasharray="4,2"
-                    className="pointer-events-none"
+                {/* Vertical mode: all pages with lazy loading */}
+                {viewMode === 'vertical' && Array.from({ length: numPages }, (_, i) => i + 1).map((pageNum) => (
+                  <VerticalPageWrapper
+                    key={pageNum}
+                    pageNum={pageNum}
+                    scale={scale}
+                    pdfUrl={pdfUrl}
+                    pageSize={pageSize}
+                    thisPageSize={pageSizes.get(pageNum) || pageSize}
+                    shouldRender={renderedPages.has(pageNum)}
+                    pageSentences={sentencesPerPage.get(pageNum) || []}
+                    pageFigureTables={figureTablesPerPage.get(pageNum) || []}
+                    pageAnnotations={annotations.filter(
+                      (a) => a.pageNumber === pageNum && !hiddenAnnotationIds.has(a.id)
+                    )}
+                    isInteractionDisabled={isInteractionDisabled}
+                    hoveredSentenceId={hoveredSentenceId}
+                    selectedSentenceId={selectedSentenceId}
+                    hoveredFigureTableId={hoveredFigureTableId}
+                    selectedFigureTableId={selectedFigureTableId}
+                    selectedAnnotationId={selectedAnnotationId}
+                    sentenceAnnotationCounts={sentenceAnnotationCounts}
+                    figureTableAnnotationCounts={figureTableAnnotationCounts}
+                    isCreatingMode={isCreatingMode}
+                    selectionMode={selectionMode}
+                    isUploader={isUploader}
+                    currentUserName={currentUserName}
+                    currentUserId={currentUserId}
+                    onSentenceHover={setHoveredSentenceId}
+                    onSentenceClick={handleSentenceClick}
+                    onFigureTableHover={setHoveredFigureTableId}
+                    onFigureTableClick={handleFigureTableClick}
+                    onAnnotationSelect={setSelectedAnnotationId}
+                    onAnnotationDelete={handleDeleteAnnotation}
+                    onAnnotationHide={handleHideAnnotation}
+                    onAnnotationEdit={handleEditAnnotation}
+                    onAnnotationPositionChange={handlePositionChange}
+                    onRegionDeleted={onRegionDeleted}
+                    onPageLoad={handleVerticalPageLoad}
+                    containerRef={containerRef as React.RefObject<HTMLElement>}
+                    setPageRef={setPageRefCallback}
+                    // Figure/Table drawing mode props
+                    isFigureTableMode={isFigureTableMode}
+                    onDrawStart={handleVerticalDrawStart}
+                    onDrawMove={handleVerticalDrawMove}
+                    onDrawEnd={handleVerticalDrawEnd}
+                    isDrawing={isDrawing}
+                    drawingPageNum={drawingPageNum}
+                    drawingRect={drawingRect}
                   />
-                )}
+                ))}
+              </Document>
 
-                {/* Pending highlight preview */}
-                {pendingHighlight && (
-                  <rect
-                    x={pendingHighlight.x * scale}
-                    y={pendingHighlight.y * scale}
-                    width={pendingHighlight.width * scale}
-                    height={pendingHighlight.height * scale}
-                    fill="rgba(59, 130, 246, 0.3)"
-                    stroke="#3B82F6"
-                    strokeWidth={2}
-                    className="pointer-events-none animate-pulse"
+              {/* SVG Overlay for Annotations - horizontal mode only */}
+              {viewMode === 'horizontal' && pageSize.width > 0 && !isInteractionDisabled && (
+                <svg
+                  className="absolute top-0 left-0"
+                  width={pageSize.width * scale}
+                  height={pageSize.height * scale}
+                  style={{
+                    overflow: "visible",
+                    pointerEvents: "none",
+                    zIndex: 10,
+                  }}
+                >
+                  {/* Sentence highlight layer */}
+                  <SentenceHighlightLayer
+                    sentences={sentences}
+                    hoveredSentenceId={hoveredSentenceId}
+                    selectedSentenceId={selectedSentenceId}
+                    scale={scale}
+                    onSentenceHover={setHoveredSentenceId}
+                    onSentenceClick={handleSentenceClick}
+                    sentenceAnnotationCounts={sentenceAnnotationCounts}
+                    isAnnotationMode={isCreatingMode && selectionMode === "sentence"}
                   />
-                )}
-              </svg>
-            )}
+
+                  {/* Figure/Table highlight layer */}
+                  <FigureTableHighlightLayer
+                    figureTables={figureTables}
+                    hoveredId={hoveredFigureTableId}
+                    selectedId={selectedFigureTableId}
+                    scale={scale}
+                    onHover={setHoveredFigureTableId}
+                    onClick={handleFigureTableClick}
+                    discussionCounts={figureTableAnnotationCounts}
+                    isAnnotationMode={isCreatingMode}
+                    isUploader={isUploader}
+                    onDelete={onRegionDeleted}
+                  />
+
+                  {/* Render existing annotations */}
+                  {pageAnnotations.map((annotation) => (
+                    <AnnotationDanmaku
+                      key={annotation.id}
+                      annotation={annotation}
+                      isSelected={selectedAnnotationId === annotation.id}
+                      onSelect={setSelectedAnnotationId}
+                      onDelete={handleDeleteAnnotation}
+                      onHide={handleHideAnnotation}
+                      onEdit={handleEditAnnotation}
+                      onPositionChange={handlePositionChange}
+                      scale={scale}
+                      containerRef={containerRef as React.RefObject<HTMLElement>}
+                      currentUserName={currentUserName}
+                      currentUserId={currentUserId}
+                    />
+                  ))}
+
+                  {/* Drawing rectangle */}
+                  {isDrawing && drawingRect && (
+                    <rect
+                      x={drawingRect.x}
+                      y={drawingRect.y}
+                      width={drawingRect.width}
+                      height={drawingRect.height}
+                      fill={isFigureTableMode ? "rgba(16, 185, 129, 0.2)" : "rgba(59, 130, 246, 0.2)"}
+                      stroke={isFigureTableMode ? "#10B981" : "#3B82F6"}
+                      strokeWidth={2}
+                      strokeDasharray="4,2"
+                      className="pointer-events-none"
+                    />
+                  )}
+
+                  {/* Pending highlight preview */}
+                  {pendingHighlight && (
+                    <rect
+                      x={pendingHighlight.x * scale}
+                      y={pendingHighlight.y * scale}
+                      width={pendingHighlight.width * scale}
+                      height={pendingHighlight.height * scale}
+                      fill="rgba(59, 130, 246, 0.3)"
+                      stroke="#3B82F6"
+                      strokeWidth={2}
+                      className="pointer-events-none animate-pulse"
+                    />
+                  )}
+                </svg>
+              )}
+            </div>
           </div>
         </div>
 
@@ -1970,31 +3038,20 @@ If you don't know or the question is outside the paper's scope, say so honestly.
       </div>
 
       {/* Right Panel - AI Companion (Overlay/Drawer) */}
-      <div 
-        className={`fixed top-0 right-0 h-full w-[380px] bg-white dark:bg-slate-900 border-l border-slate-200 dark:border-slate-700 shadow-2xl transform transition-transform duration-300 ease-in-out z-50 ${
-          showAIPanel ? 'translate-x-0' : 'translate-x-full'
-        }`}
-      >
-        <AICompanionPanel
-          paperContent={paperContent}
-          onAddAnnotation={handleAddAnnotation}
-          existingAnnotations={annotations}
-          pageTextContent={pageText}
-          onSearchTextInPdf={searchTextInPdf}
-          dialogContainer={viewerRef.current}
-          activeSession={activeSession}
-          paperId={paperId}
-          onSessionUpdated={onSessionUpdated}
-        />
-      </div>
-      
-      {/* Overlay backdrop when AI panel is open */}
-      {showAIPanel && (
-        <div
-          className="fixed inset-0 bg-black/20 z-40"
-          onClick={() => setShowAIPanel(false)}
-        />
-      )}
+      <AICompanionPanel
+        paperContent={paperContent}
+        onAddAnnotation={handleAddAnnotation}
+        existingAnnotations={annotations}
+        pageTextContent={pageText}
+        onSearchTextInPdf={searchTextInPdf}
+        dialogContainer={viewerRef.current}
+        activeSession={activeSession}
+        paperId={paperId}
+        currentUserId={currentUserId}
+        onSessionUpdated={onSessionUpdated}
+        isOpen={showAIPanel}
+        onClose={() => setShowAIPanel(false)}
+      />
 
       {/* Sentence Discussion Panel */}
       <SentenceDiscussionPanel
@@ -2004,6 +3061,8 @@ If you don't know or the question is outside the paper's scope, say so honestly.
         onAddReply={handleAddSentenceReply}
         onDeleteAnnotation={handleDeleteSentenceAnnotation}
         onDeleteReply={handleDeleteSentenceReply}
+        onEditAnnotation={handleEditSentenceAnnotation}
+        onEditReply={handleEditSentenceReply}
         onClose={() => {
           setShowDiscussionPanel(false);
           setSelectedSentenceId(null);
@@ -2013,6 +3072,8 @@ If you don't know or the question is outside the paper's scope, say so honestly.
         onAIFollowUp={handleAIFollowUp}
         currentUserName={currentUserName}
         currentUserId={currentUserId}
+        aiPromptTemplate={aiFollowUpPromptTemplate}
+        onAiPromptTemplateChange={setAiFollowUpPromptTemplate}
       />
 
       {/* Figure/Table Discussion Panel */}
@@ -2023,6 +3084,8 @@ If you don't know or the question is outside the paper's scope, say so honestly.
         onAddReply={handleAddFigureTableReply}
         onDeleteAnnotation={handleDeleteFigureTableAnnotation}
         onDeleteReply={handleDeleteFigureTableReply}
+        onEditAnnotation={handleEditFigureTableAnnotation}
+        onEditReply={handleEditFigureTableReply}
         onClose={() => {
           setShowFigureTableDiscussionPanel(false);
           setSelectedFigureTableId(null);
@@ -2115,7 +3178,8 @@ If you don't know or the question is outside the paper's scope, say so honestly.
                 onClick={() => {
                   if (pendingRegion.label.trim()) {
                     onRegionCreated?.({
-                      pageNumber,
+                      // Use the stored page number if available (vertical mode), otherwise use current page (horizontal mode)
+                      pageNumber: pendingRegion.pageNumber ?? pageNumber,
                       type: pendingRegion.type,
                       label: pendingRegion.label.trim(),
                       caption: pendingRegion.caption.trim() || undefined,

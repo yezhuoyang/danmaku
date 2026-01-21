@@ -21,6 +21,11 @@ import About from "./pages/About";
 import Admin from "./pages/Admin";
 import ModelRankings from "./pages/ModelRankings";
 import TopContributors from "./pages/TopContributors";
+import Notifications from "./pages/Notifications";
+import ChallengeProblems from "./pages/ChallengeProblems";
+import ChallengeProblemDetail from "./pages/ChallengeProblemDetail";
+import Debates from "./pages/Debates";
+import DebateView from "./pages/DebateView";
 
 function Router() {
   return (
@@ -42,6 +47,11 @@ function Router() {
       <Route path="/model-rankings" component={ModelRankings} />
       <Route path="/model-rankings/:modelId" component={ModelRankings} />
       <Route path="/top-contributors" component={TopContributors} />
+      <Route path="/notifications" component={Notifications} />
+      <Route path="/challenge-problems" component={ChallengeProblems} />
+      <Route path="/challenge/:id" component={ChallengeProblemDetail} />
+      <Route path="/debates" component={Debates} />
+      <Route path="/debate/:id" component={DebateView} />
       <Route path="/404" component={NotFound} />
       <Route component={NotFound} />
     </Switch>

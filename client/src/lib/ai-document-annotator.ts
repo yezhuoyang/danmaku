@@ -233,7 +233,7 @@ Your task: Read through each sentence carefully. For each one:
     sectionGroups.get(sectionKey)!.push(sentence);
   }
 
-  for (const [section, sentences] of sectionGroups) {
+  for (const [section, sentences] of Array.from(sectionGroups.entries())) {
     prompt += `\n--- Section: ${section} ---\n`;
     for (const sentence of sentences) {
       prompt += `[${sentence.id}]: "${sentence.text}"\n`;

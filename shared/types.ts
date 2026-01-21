@@ -60,7 +60,7 @@ export interface UserFollow {
 }
 
 // Like/Dislike types
-export type LikeTargetType = 'annotation' | 'comment' | 'user_review' | 'ai_review' | 'necessary_background' | 'ai_session';
+export type LikeTargetType = 'annotation' | 'comment' | 'user_review' | 'ai_review' | 'necessary_background' | 'ai_session' | 'challenge_problem' | 'challenge_comment';
 
 export interface LikeStatus {
   likeCount: number;
@@ -104,6 +104,7 @@ export interface Paper {
   abstract?: string;
   addedBy?: string;      // User ID who added this paper
   viewCount: number;
+  tags?: string[];       // Area tags (e.g., "Quantum Computing", "Machine Learning")
   createdAt: number;     // Unix timestamp
 }
 
@@ -111,6 +112,8 @@ export interface PaperWithStats extends Paper {
   readerCount: number;
   annotationCount: number;
   hasAiAnalysis: boolean;
+  aiReviewCount?: number;      // Number of AI reviews for this paper
+  aiReviewAvgScore?: number;   // Average overall score from AI reviews (1-10)
 }
 
 // ============================================================================
@@ -209,6 +212,11 @@ export interface AddPaperRequest {
   title: string;
   authors: string[];
   abstract?: string;
+  tags?: string[];
+}
+
+export interface UpdatePaperTagsRequest {
+  tags: string[];
 }
 
 export interface PaperListResponse {
@@ -775,4 +783,368 @@ export interface GenerateResearchIdeasRequest {
 export interface GenerateResearchIdeasResponse {
   ideas: ResearchIdea[];
   promptUsed: string;
+}
+
+// Public insights from other users' sessions
+export interface PublicInsight {
+  sessionId: string;
+  userId: string;
+  userName: string;
+  userAvatar?: string;
+  sessionTitle: string;
+  modelUsed: string;
+  openQuestions?: OpenQuestion[];
+  researchIdeas?: ResearchIdea[];
+  updatedAt: number;
+}
+
+// Response with all public insights for a paper
+export interface PublicInsightsResponse {
+  insights: PublicInsight[];
+}
+
+// ============================================================================
+// NOTIFICATION TYPES
+// ============================================================================
+
+// Notification event types
+export type NotificationType =
+  | 'follow'           // Someone followed you
+  | 'reply'            // Someone replied to your comment/annotation
+  | 'like'             // Someone liked your content
+  | 'annotation'       // Someone annotated on your paper
+  | 'comment'          // Someone commented on your paper
+  | 'ai_review'        // Someone added AI review to your paper
+  | 'user_review';     // Someone reviewed your paper
+
+// Notification object
+export interface Notification {
+  id: string;
+  userId: string;              // The user receiving the notification
+  type: NotificationType;
+  actorId: string;             // The user who performed the action
+  actorName: string;           // Actor's display name
+  actorAvatar?: string;        // Actor's avatar
+  targetType?: string;         // Type of target (paper, annotation, comment, etc.)
+  targetId?: string;           // ID of the target
+  targetTitle?: string;        // Title or preview text of the target
+  paperId?: string;            // Related paper ID (for navigation)
+  paperTitle?: string;         // Paper title (for context)
+  isRead: boolean;             // Whether notification has been read
+  createdAt: number;           // Unix timestamp
+}
+
+// Notification list response
+export interface NotificationListResponse {
+  notifications: Notification[];
+  total: number;
+  unreadCount: number;
+}
+
+// Mark notifications as read request
+export interface MarkNotificationsReadRequest {
+  notificationIds: string[];   // IDs to mark as read, or empty array for all
+}
+
+// ============================================================================
+// CHALLENGE PROBLEMS TYPES (Research Problems & Ideas with Progress Tree)
+// ============================================================================
+
+// Challenge problem status
+export type ChallengeProblemStatus = 'unsolved' | 'investigating' | 'solved';
+export type ChallengeProblemType = 'open_question' | 'research_idea';
+export type IdeaLinkRelationship = 'addresses' | 'partial' | 'inspired_by';
+
+// Challenge problem (combines OpenQuestion and ResearchIdea with metadata and progress tree)
+export interface ChallengeProblem {
+  id: string;
+  paperId?: string;
+  paperTitle?: string;
+  historyId?: string;
+  userId: string;
+  userName: string;
+  userAvatar?: string;
+
+  // Progress Tree fields
+  parentId?: string;               // Parent question (null for root)
+  rootId?: string;                 // Root question of the tree (null for root)
+  depth: number;                   // Tree depth (0 = root)
+  orderIndex: number;              // Sibling order within parent
+  children?: ChallengeProblem[];   // Nested children (populated on detail view)
+
+  type: ChallengeProblemType;
+  status: ChallengeProblemStatus;
+  title: string;
+  description?: string;
+  context?: string;
+
+  // Research idea specific
+  methodology?: string;
+  expectedOutcome?: string;
+  feasibility?: 'high' | 'medium' | 'low';
+  novelty?: 'incremental' | 'moderate' | 'breakthrough';
+  prerequisites?: string[];
+
+  // Categorization
+  importance?: 'high' | 'medium' | 'low';
+  area?: string;
+  tags: string[];
+
+  // Solution tracking
+  solvedBy?: string;
+  solvedByName?: string;
+  solvedAt?: number;
+  solutionSummary?: string;
+
+  // Engagement
+  upvotes: number;
+  downvotes: number;
+  commentCount: number;
+  childCount: number;              // Number of sub-questions
+  linkedIdeaCount: number;         // Number of linked research ideas
+
+  // Linked ideas (populated on detail view)
+  linkedIdeas?: ChallengeIdeaLink[];
+
+  createdAt: number;
+  updatedAt: number;
+}
+
+// Link between a research idea and a research question
+export interface ChallengeIdeaLink {
+  id: string;
+  questionId: string;
+  ideaId: string;
+  idea?: ChallengeProblem;         // Populated when fetching
+  userId: string;
+  userName: string;
+  relationship: IdeaLinkRelationship;
+  notes?: string;
+  createdAt: number;
+}
+
+// Challenge comment
+export interface ChallengeComment {
+  id: string;
+  problemId: string;
+  userId: string;
+  userName: string;
+  userAvatar?: string;
+  parentId?: string;
+  content: string;
+  upvotes: number;
+  downvotes: number;
+  replies?: ChallengeComment[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+// API Response types
+export interface ChallengeProblemsResponse {
+  problems: ChallengeProblem[];
+  total: number;
+}
+
+export interface ChallengeProblemDetailResponse {
+  problem: ChallengeProblem;        // Includes nested children[] and linkedIdeas[]
+  comments: ChallengeComment[];
+  progressTree: ChallengeProblem[]; // Full tree structure (all descendants)
+}
+
+// Create/Update request types
+export interface CreateChallengeProblemRequest {
+  type: ChallengeProblemType;
+  title: string;
+  description?: string;
+  context?: string;
+  paperId?: string;
+  historyId?: string;
+  parentId?: string;               // For creating sub-questions
+  methodology?: string;
+  expectedOutcome?: string;
+  feasibility?: 'high' | 'medium' | 'low';
+  novelty?: 'incremental' | 'moderate' | 'breakthrough';
+  prerequisites?: string[];
+  importance?: 'high' | 'medium' | 'low';
+  area?: string;
+  tags?: string[];
+}
+
+export interface UpdateChallengeProblemRequest {
+  status?: ChallengeProblemStatus;
+  title?: string;
+  description?: string;
+  context?: string;
+  methodology?: string;
+  expectedOutcome?: string;
+  solutionSummary?: string;
+  tags?: string[];
+  orderIndex?: number;             // For reordering in tree
+  paperId?: string | null;         // Link/unlink paper (null to remove)
+}
+
+// Link idea to question request
+export interface LinkIdeaToQuestionRequest {
+  ideaId: string;
+  relationship: IdeaLinkRelationship;
+  notes?: string;
+}
+
+// Vote request for challenges
+export interface ChallengeProblemVoteRequest {
+  isLike: boolean;                 // true = upvote, false = downvote
+}
+
+// Challenge comment request
+export interface CreateChallengeCommentRequest {
+  content: string;
+  parentId?: string;               // For replies
+}
+
+// ============================================================================
+// AI RESEARCH DEBATE TYPES
+// ============================================================================
+
+// Debate status
+export type DebateStatus = 'setup' | 'active' | 'paused' | 'concluded';
+
+// Speaker types
+export type DebateSpeaker = 'affirmative' | 'negative' | 'judge' | 'user';
+
+// Agent configuration for a debate participant
+export interface DebateAgentConfig {
+  modelId: string;                  // AI model to use
+  systemPrompt: string;             // Custom system prompt
+  apiKeyEncrypted?: string;         // Encrypted API key (server only)
+  apiKeySet?: boolean;              // Whether API key is configured (client view)
+}
+
+// A single message in the debate
+export interface DebateMessage {
+  id: string;
+  speaker: DebateSpeaker;
+  content: string;
+  timestamp: number;
+  tokenCount?: number;
+  isInterruption?: boolean;         // True if judge interrupted or user intervened
+  metadata?: {
+    reasoning?: string;             // Internal reasoning (for judge)
+    citations?: string[];           // Paper references used
+    targetAgent?: DebateSpeaker;    // For user interventions targeted at specific agent
+  };
+}
+
+// Full debate session
+export interface DebateSession {
+  id: string;
+  userId: string;
+  userName: string;
+  userAvatar?: string;
+  title: string;                    // Debate topic title
+  topic: string;                    // Full debate proposition
+
+  status: DebateStatus;
+
+  // Agent configurations
+  affirmativeConfig: DebateAgentConfig;
+  negativeConfig: DebateAgentConfig;
+  judgeConfig: DebateAgentConfig;
+
+  // Conversation state
+  messages: DebateMessage[];
+  currentSpeaker?: DebateSpeaker;
+  turnCount: number;
+  maxTurns: number;                 // Auto-conclude after this many turns
+
+  // Background knowledge
+  backgroundKnowledge?: string;     // User-provided context
+  paperIds: string[];               // Linked paper IDs
+  papers?: Array<{                  // Populated when fetching
+    id: string;
+    title: string;
+    authors: string[];
+    abstract?: string;
+  }>;
+
+  // Conclusion
+  conclusion?: string;              // Judge's final verdict
+  winner?: 'affirmative' | 'negative' | 'draw';
+  concludedAt?: number;
+
+  // Token tracking
+  totalTokensAffirmative: number;
+  totalTokensNegative: number;
+  totalTokensJudge: number;
+
+  // Timestamps
+  createdAt: number;
+  updatedAt: number;
+}
+
+// Create debate request
+export interface CreateDebateRequest {
+  title: string;
+  topic: string;
+  affirmativeConfig: {
+    modelId: string;
+    apiKey?: string;
+    customPrompt?: string;          // Override default prompt
+  };
+  negativeConfig: {
+    modelId: string;
+    apiKey?: string;
+    customPrompt?: string;
+  };
+  judgeConfig: {
+    modelId: string;
+    apiKey?: string;
+    customPrompt?: string;
+  };
+  backgroundKnowledge?: string;
+  paperIds?: string[];
+  maxTurns?: number;                // Default 20
+}
+
+// Update debate request (setup phase only)
+export interface UpdateDebateRequest {
+  title?: string;
+  topic?: string;
+  backgroundKnowledge?: string;
+  paperIds?: string[];
+  maxTurns?: number;
+  affirmativePrompt?: string;
+  negativePrompt?: string;
+  judgePrompt?: string;
+}
+
+// Set API key for an agent
+export interface SetDebateApiKeyRequest {
+  agent: 'affirmative' | 'negative' | 'judge';
+  apiKey: string;
+}
+
+// User intervention request
+export interface DebateInterveneRequest {
+  message: string;
+  targetAgent?: DebateSpeaker;      // 'all' if not specified
+}
+
+// Debate list response
+export interface DebateListResponse {
+  debates: DebateSession[];
+  total: number;
+}
+
+// Continue debate response
+export interface DebateContinueResponse {
+  message: DebateMessage;
+  session: DebateSession;
+  isComplete: boolean;
+}
+
+// Debate conclusion response
+export interface DebateConclusionResponse {
+  conclusion: string;
+  winner: 'affirmative' | 'negative' | 'draw';
+  session: DebateSession;
 }

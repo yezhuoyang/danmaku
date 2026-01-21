@@ -205,8 +205,9 @@ interface FigureTableHighlightLayerProps {
 
 /**
  * SVG layer that renders figure/table highlights with hover/click interactions.
+ * Memoized to prevent unnecessary re-renders when parent re-renders.
  */
-export function FigureTableHighlightLayer({
+export const FigureTableHighlightLayer = memo(function FigureTableHighlightLayer({
   figureTables,
   hoveredId,
   selectedId,
@@ -269,4 +270,4 @@ export function FigureTableHighlightLayer({
       })}
     </g>
   );
-}
+});

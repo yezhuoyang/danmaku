@@ -44,14 +44,22 @@ import {
   Key,
   Loader2,
   Lightbulb,
+  Tag,
+  X,
+  Plus,
+  Pencil,
+  HelpCircle,
+  FlaskConical,
+  Target,
 } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { LikeButtons } from "@/components/ui/LikeButtons";
 import { useAuth } from "@/contexts/AuthContext";
+import { NotificationBell } from "@/components/NotificationBell";
 import { AIReviewPanel } from "@/components/AIReviewPanel";
 import { AIAgentHistoryPanel } from "@/components/AIAgentHistoryPanel";
 import { NecessaryBackgroundPanel } from "@/components/NecessaryBackgroundPanel";
-import { AIInsightsPanel } from "@/components/AIInsightsPanel";
+import { QuizSection, OpenQuestionsSection, ResearchIdeasSection } from "@/components/insights";
 import { UserReviewPanel } from "@/components/UserReviewPanel";
 import * as api from "../lib/api";
 import type { PaperWithStats, Annotation, AiAnalysis, AiReview, AiAgentHistory, NecessaryBackground, UserReview, TopContributor, AiModelRanking } from "../../../shared/types";
@@ -430,11 +438,29 @@ function AICompanionDialog({ paperId, activeSession, isLoggedIn, onSessionUpdate
   const [localMessages, setLocalMessages] = useState<ChatMessage[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Sync messages from active session (filter to only user/assistant messages)
+  // Helper to check if a message is an internal/system message (not user conversation)
+  // These include: page analysis, background generation, review generation, etc.
+  const isInternalMessage = (content: string) => {
+    if (content.startsWith('[System Context')) return true;
+    if (content.startsWith('[Analyze Page')) return true;
+    if (content.startsWith('[Page ')) return true;  // Catches "[Page X Analysis]" responses
+    if (content.startsWith('[Reading Complete')) return true;  // Reading complete summary
+    if (content.startsWith('[Generate Background')) return true;
+    if (content.startsWith('[Generated Background')) return true;
+    if (content.startsWith('[Generate Review')) return true;
+    if (content.startsWith('[Generated Review')) return true;
+    if (content.startsWith('Paper:') && content.includes('=== SENTENCES ===')) return true; // Page analysis prompts
+    if (content.startsWith('=== SENTENCES ===')) return true;
+    if (content.includes('=== FIGURES/TABLES ===')) return true;
+    if (content.includes('Total sentences analyzed:')) return true;  // Analysis summary content
+    return false;
+  };
+
+  // Sync messages from active session (filter to only user/assistant messages, excluding internal ones)
   useEffect(() => {
     if (activeSession?.messages) {
       const filtered = activeSession.messages
-        .filter(m => m.role === 'user' || m.role === 'assistant')
+        .filter(m => (m.role === 'user' || m.role === 'assistant') && !isInternalMessage(m.content))
         .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content, timestamp: m.timestamp }));
       setLocalMessages(filtered);
     } else {
@@ -499,7 +525,7 @@ function AICompanionDialog({ paperId, activeSession, isLoggedIn, onSessionUpdate
           <div className="flex flex-col items-center text-center gap-2">
             <AlertCircle className="w-8 h-8 text-slate-400" />
             <p className="text-sm text-slate-500 dark:text-slate-400">
-              Please <Link href="/login"><a className="text-indigo-600 hover:underline">log in</a></Link> to chat with AI
+              Please <Link href="/login" className="text-indigo-600 hover:underline">log in</Link> to chat with AI
             </p>
           </div>
         </CardContent>
@@ -653,6 +679,15 @@ export default function PaperDetail() {
   const [modelRankings, setModelRankings] = useState<AiModelRanking[]>([]);
   const [loadingContributors, setLoadingContributors] = useState(true);
   const [loadingRankings, setLoadingRankings] = useState(true);
+
+  // Tag editing state
+  const [isEditingTags, setIsEditingTags] = useState(false);
+  const [editingTags, setEditingTags] = useState<string[]>([]);
+  const [newTagInput, setNewTagInput] = useState('');
+  const [isSavingTags, setIsSavingTags] = useState(false);
+
+  // Check if current user is the paper uploader
+  const isUploader = user && paper?.addedBy === user.id;
 
   // Find the active session for the current user
   const activeSession = aiAgentHistories.find(h => h.isActive && h.userId === user?.id) || null;
@@ -886,6 +921,48 @@ export default function PaperDetail() {
     }
   };
 
+  // Tag editing handlers
+  const handleStartEditTags = () => {
+    setEditingTags(paper?.tags || []);
+    setNewTagInput('');
+    setIsEditingTags(true);
+  };
+
+  const handleCancelEditTags = () => {
+    setIsEditingTags(false);
+    setEditingTags([]);
+    setNewTagInput('');
+  };
+
+  const handleAddTag = () => {
+    const tag = newTagInput.trim();
+    if (tag && tag.length <= 50 && editingTags.length < 10 && !editingTags.includes(tag)) {
+      setEditingTags([...editingTags, tag]);
+      setNewTagInput('');
+    }
+  };
+
+  const handleRemoveTag = (tagToRemove: string) => {
+    setEditingTags(editingTags.filter(t => t !== tagToRemove));
+  };
+
+  const handleSaveTags = async () => {
+    if (!paperId) return;
+
+    setIsSavingTags(true);
+    try {
+      const result = await api.updatePaperTags(paperId, editingTags);
+      setPaper(prev => prev ? { ...prev, tags: result.tags } : prev);
+      setIsEditingTags(false);
+      toast.success("Tags updated successfully");
+    } catch (error: any) {
+      console.error("Failed to update tags:", error);
+      toast.error(error.message || "Failed to update tags");
+    } finally {
+      setIsSavingTags(false);
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-100 via-purple-100 to-pink-100 dark:from-slate-950 dark:via-indigo-950/40 dark:to-purple-950/40">
@@ -944,38 +1021,39 @@ export default function PaperDetail() {
                 Back
               </Link>
             </Button>
-            <Link href="/">
-              <a className="flex items-center gap-2">
-                <div className="w-8 h-8 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-lg flex items-center justify-center">
-                  <MessageSquare className="w-4 h-4 text-white" />
-                </div>
-              </a>
+            <Link href="/" className="flex items-center gap-2">
+              <div className="w-8 h-8 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-lg flex items-center justify-center">
+                <MessageSquare className="w-4 h-4 text-white" />
+              </div>
             </Link>
           </div>
 
           {authLoading ? (
             <Skeleton className="h-9 w-20" />
           ) : user ? (
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="sm" className="gap-2">
-                  <User className="h-4 w-4" />
-                  {user.displayName}
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <Link href={`/profile/${user.id}`}>
-                  <DropdownMenuItem>
-                    <User className="h-4 w-4 mr-2" />
-                    Profile
+            <>
+              <NotificationBell />
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="sm" className="gap-2">
+                    <User className="h-4 w-4" />
+                    {user.displayName}
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <Link href={`/profile/${user.id}`}>
+                    <DropdownMenuItem>
+                      <User className="h-4 w-4 mr-2" />
+                      Profile
+                    </DropdownMenuItem>
+                  </Link>
+                  <DropdownMenuItem onClick={handleLogout}>
+                    <LogOut className="h-4 w-4 mr-2" />
+                    Logout
                   </DropdownMenuItem>
-                </Link>
-                <DropdownMenuItem onClick={handleLogout}>
-                  <LogOut className="h-4 w-4 mr-2" />
-                  Logout
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </>
           ) : (
             <div className="flex gap-2">
               <Button variant="ghost" size="sm" asChild>
@@ -1007,7 +1085,9 @@ export default function PaperDetail() {
                 { id: 'user-reviews-section', label: 'User Reviews', icon: <Star className="w-3 h-3" /> },
                 { id: 'ai-reviews-section', label: 'AI Reviews', icon: <Bot className="w-3 h-3" /> },
                 { id: 'ai-sessions-section', label: 'AI Sessions', icon: <History className="w-3 h-3" /> },
-                { id: 'insights-section', label: 'AI Insights', icon: <Lightbulb className="w-3 h-3" /> },
+                { id: 'quiz-section', label: 'Test Understanding', icon: <Target className="w-3 h-3" /> },
+                { id: 'open-questions-section', label: 'Open Questions', icon: <HelpCircle className="w-3 h-3" /> },
+                { id: 'research-ideas-section', label: 'Research Ideas', icon: <FlaskConical className="w-3 h-3" /> },
               ]}
               hasAbstract={!!paper.abstract}
               hasAiAnalysis={!!aiAnalysis}
@@ -1027,11 +1107,9 @@ export default function PaperDetail() {
                   <Users className="w-4 h-4 text-indigo-500" />
                   Top Contributors
                 </h2>
-                <Link href="/top-contributors">
-                  <a className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1">
-                    View All
-                    <ChevronRight className="w-3 h-3" />
-                  </a>
+                <Link href="/top-contributors" className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1">
+                  View All
+                  <ChevronRight className="w-3 h-3" />
                 </Link>
               </div>
 
@@ -1056,29 +1134,27 @@ export default function PaperDetail() {
                   <CardContent className="p-0">
                     <div className="divide-y divide-slate-100 dark:divide-slate-800">
                       {topContributors.slice(0, 8).map((contributor, index) => (
-                        <Link key={contributor.userId} href={`/profile/${contributor.userId}`}>
-                          <a className="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-                            <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0 ${
-                              index === 0 ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400' :
-                              index === 1 ? 'bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-300' :
-                              index === 2 ? 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400' :
-                              'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400'
-                            }`}>
-                              {contributor.rank || index + 1}
-                            </div>
-                            <Avatar className="w-5 h-5">
-                              <AvatarImage src={contributor.userAvatar} />
-                              <AvatarFallback className="text-[10px] bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400">
-                                {contributor.userName.charAt(0).toUpperCase()}
-                              </AvatarFallback>
-                            </Avatar>
-                            <span className="flex-1 font-medium text-xs text-slate-800 dark:text-slate-200 truncate">
-                              {contributor.userName}
-                            </span>
-                            <span className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400">
-                              {contributor.totalScore} pts
-                            </span>
-                          </a>
+                        <Link key={contributor.userId} href={`/profile/${contributor.userId}`} className="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+                          <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0 ${
+                            index === 0 ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400' :
+                            index === 1 ? 'bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-300' :
+                            index === 2 ? 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400' :
+                            'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400'
+                          }`}>
+                            {contributor.rank || index + 1}
+                          </div>
+                          <Avatar className="w-5 h-5">
+                            <AvatarImage src={contributor.userAvatar} />
+                            <AvatarFallback className="text-[10px] bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400">
+                              {contributor.userName.charAt(0).toUpperCase()}
+                            </AvatarFallback>
+                          </Avatar>
+                          <span className="flex-1 font-medium text-xs text-slate-800 dark:text-slate-200 truncate">
+                            {contributor.userName}
+                          </span>
+                          <span className="text-[10px] font-bold text-indigo-600 dark:text-indigo-400">
+                            {contributor.totalScore} pts
+                          </span>
                         </Link>
                       ))}
                     </div>
@@ -1102,7 +1178,9 @@ export default function PaperDetail() {
                     { id: 'user-reviews-section', label: 'User Reviews', icon: <Star className="w-3.5 h-3.5" /> },
                     { id: 'ai-reviews-section', label: 'AI Reviews', icon: <Bot className="w-3.5 h-3.5" /> },
                     { id: 'ai-sessions-section', label: 'AI Sessions', icon: <History className="w-3.5 h-3.5" /> },
-                    { id: 'insights-section', label: 'AI Insights', icon: <Lightbulb className="w-3.5 h-3.5" /> },
+                    { id: 'quiz-section', label: 'Test Understanding', icon: <Target className="w-3.5 h-3.5" /> },
+                    { id: 'open-questions-section', label: 'Open Questions', icon: <HelpCircle className="w-3.5 h-3.5" /> },
+                    { id: 'research-ideas-section', label: 'Research Ideas', icon: <FlaskConical className="w-3.5 h-3.5" /> },
                   ]}
                   hasAbstract={!!paper.abstract}
                   hasAiAnalysis={!!aiAnalysis}
@@ -1156,6 +1234,101 @@ export default function PaperDetail() {
               <span className="font-semibold">{commentAnnotations.length}</span>
               <span className="text-slate-500">Comments</span>
             </span>
+          </div>
+
+          {/* Tags Section */}
+          <div className="flex flex-wrap items-center gap-2 mt-3">
+            <Tag className="h-4 w-4 text-slate-400" />
+            {!isEditingTags ? (
+              <>
+                {paper.tags && paper.tags.length > 0 ? (
+                  paper.tags.map((tag, index) => (
+                    <span
+                      key={index}
+                      className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-600"
+                    >
+                      {tag}
+                    </span>
+                  ))
+                ) : (
+                  <span className="text-sm text-slate-400">No tags</span>
+                )}
+                {isUploader && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-6 px-2 text-slate-500 hover:text-slate-700"
+                    onClick={handleStartEditTags}
+                  >
+                    <Pencil className="h-3 w-3 mr-1" />
+                    Edit
+                  </Button>
+                )}
+              </>
+            ) : (
+              <div className="flex flex-wrap items-center gap-2 w-full">
+                {editingTags.map((tag, index) => (
+                  <span
+                    key={index}
+                    className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-700"
+                  >
+                    {tag}
+                    <button
+                      onClick={() => handleRemoveTag(tag)}
+                      className="ml-1.5 hover:text-red-500"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
+                  </span>
+                ))}
+                <div className="flex items-center gap-1">
+                  <Input
+                    value={newTagInput}
+                    onChange={(e) => setNewTagInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        handleAddTag();
+                      }
+                    }}
+                    placeholder="Add tag..."
+                    className="h-7 w-32 text-xs"
+                    disabled={editingTags.length >= 10}
+                  />
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7 px-2"
+                    onClick={handleAddTag}
+                    disabled={editingTags.length >= 10 || !newTagInput.trim()}
+                  >
+                    <Plus className="h-3 w-3" />
+                  </Button>
+                </div>
+                <div className="flex items-center gap-1 ml-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    onClick={handleCancelEditTags}
+                    disabled={isSavingTags}
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="h-7 px-2 text-xs"
+                    onClick={handleSaveTags}
+                    disabled={isSavingTags}
+                  >
+                    {isSavingTags ? (
+                      <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                    ) : null}
+                    Save
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -1292,16 +1465,32 @@ export default function PaperDetail() {
         />
         </div>
 
-        {/* AI Insights Section - Quiz, Open Questions, Research Ideas */}
-        {user && (
-          <div id="insights-section" className="mt-8">
-            <AIInsightsPanel
-              paperId={paper.id}
-              sessions={aiAgentHistories}
-              currentUserId={user.id}
-            />
-          </div>
-        )}
+        {/* AI Insights Section - Quiz */}
+        <div id="quiz-section" className="mt-8">
+          <QuizSection
+            paperId={paper.id}
+            sessions={aiAgentHistories}
+            currentUserId={user?.id}
+          />
+        </div>
+
+        {/* AI Insights Section - Open Questions */}
+        <div id="open-questions-section" className="mt-8">
+          <OpenQuestionsSection
+            paperId={paper.id}
+            sessions={aiAgentHistories}
+            currentUserId={user?.id}
+          />
+        </div>
+
+        {/* AI Insights Section - Research Ideas */}
+        <div id="research-ideas-section" className="mt-8">
+          <ResearchIdeasSection
+            paperId={paper.id}
+            sessions={aiAgentHistories}
+            currentUserId={user?.id}
+          />
+        </div>
           </main>
 
           {/* Right Sidebar - AI Model Arena */}
@@ -1312,11 +1501,9 @@ export default function PaperDetail() {
                   <Trophy className="w-4 h-4 text-yellow-500" />
                   AI Model Arena
                 </h2>
-                <Link href="/model-rankings">
-                  <a className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1">
-                    View All
-                    <ChevronRight className="w-3 h-3" />
-                  </a>
+                <Link href="/model-rankings" className="text-xs text-indigo-600 dark:text-indigo-400 hover:underline flex items-center gap-1">
+                  View All
+                  <ChevronRight className="w-3 h-3" />
                 </Link>
               </div>
 
@@ -1335,33 +1522,31 @@ export default function PaperDetail() {
                   <CardContent className="p-0">
                     <div className="divide-y divide-slate-100 dark:divide-slate-800">
                       {displayRankings.slice(0, 8).map((model, index) => (
-                        <Link key={model.modelId} href={`/model-rankings/${model.modelId}`}>
-                          <a className="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
-                            <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0 ${
-                              index === 0 ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400' :
-                              index === 1 ? 'bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-300' :
-                              index === 2 ? 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400' :
-                              'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400'
+                        <Link key={model.modelId} href={`/model-rankings/${model.modelId}`} className="flex items-center gap-2 px-3 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors">
+                          <div className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold flex-shrink-0 ${
+                            index === 0 ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400' :
+                            index === 1 ? 'bg-slate-200 text-slate-700 dark:bg-slate-700 dark:text-slate-300' :
+                            index === 2 ? 'bg-orange-100 text-orange-700 dark:bg-orange-900/30 dark:text-orange-400' :
+                            'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400'
+                          }`}>
+                            {model.rank || index + 1}
+                          </div>
+                          <span className="flex-1 font-medium text-xs text-slate-800 dark:text-slate-200 truncate">
+                            {model.modelName}
+                          </span>
+                          <div className="flex items-center gap-1 flex-shrink-0">
+                            <ThumbsUp className="w-2.5 h-2.5 text-green-600 dark:text-green-400" />
+                            <span className="text-[10px] text-green-600 dark:text-green-400">{model.likeCount}</span>
+                            <ThumbsDown className="w-2.5 h-2.5 text-red-500 dark:text-red-400 ml-1" />
+                            <span className="text-[10px] text-red-500 dark:text-red-400">{model.dislikeCount}</span>
+                            <span className={`text-[10px] font-bold ml-1 ${
+                              model.score > 0 ? 'text-green-600 dark:text-green-400' :
+                              model.score < 0 ? 'text-red-500 dark:text-red-400' :
+                              'text-slate-400'
                             }`}>
-                              {model.rank || index + 1}
-                            </div>
-                            <span className="flex-1 font-medium text-xs text-slate-800 dark:text-slate-200 truncate">
-                              {model.modelName}
+                              {model.score > 0 ? '+' : ''}{model.score}
                             </span>
-                            <div className="flex items-center gap-1 flex-shrink-0">
-                              <ThumbsUp className="w-2.5 h-2.5 text-green-600 dark:text-green-400" />
-                              <span className="text-[10px] text-green-600 dark:text-green-400">{model.likeCount}</span>
-                              <ThumbsDown className="w-2.5 h-2.5 text-red-500 dark:text-red-400 ml-1" />
-                              <span className="text-[10px] text-red-500 dark:text-red-400">{model.dislikeCount}</span>
-                              <span className={`text-[10px] font-bold ml-1 ${
-                                model.score > 0 ? 'text-green-600 dark:text-green-400' :
-                                model.score < 0 ? 'text-red-500 dark:text-red-400' :
-                                'text-slate-400'
-                              }`}>
-                                {model.score > 0 ? '+' : ''}{model.score}
-                              </span>
-                            </div>
-                          </a>
+                          </div>
                         </Link>
                       ))}
                     </div>

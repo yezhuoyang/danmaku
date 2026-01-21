@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -10,12 +10,13 @@ import {
   Settings,
   Send,
   MessageCircle,
+  X,
+  GripVertical,
 } from "lucide-react";
 import {
-  aiService,
   PaperContent,
 } from "@/lib/ai-service";
-import { AISettingsPanel } from "./AISettingsPanel";
+import { AISessionSettingsPanel } from "./AISessionSettingsPanel";
 import { Annotation } from "@/components/annotations/AnnotationDanmaku";
 import type { AiAgentHistory } from "../../../../shared/types";
 import * as api from "@/lib/api";
@@ -41,21 +42,81 @@ interface AICompanionPanelProps {
   activeSession?: AiAgentHistory | null;
   /** Paper ID for API calls */
   paperId?: string;
+  /** Current user ID */
+  currentUserId?: string;
   /** Callback when session is updated (e.g., token usage changes) */
   onSessionUpdated?: (session: AiAgentHistory) => void;
+  /** Whether the panel is open */
+  isOpen?: boolean;
+  /** Callback when the panel should close */
+  onClose?: () => void;
 }
+
+// Resizable panel constants
+const MIN_PANEL_WIDTH = 320;
+const MAX_PANEL_WIDTH = 1200;
 
 export function AICompanionPanel({
   paperContent,
   dialogContainer,
   activeSession,
   paperId,
+  currentUserId,
   onSessionUpdated,
+  isOpen = true,
+  onClose,
 }: AICompanionPanelProps) {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [inputMessage, setInputMessage] = useState('');
+  const [hideSessionWarning, setHideSessionWarning] = useState(false);
+
+  // Resizable panel state
+  const [panelWidth, setPanelWidth] = useState(380);
+  const [isResizing, setIsResizing] = useState(false);
+  const resizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
+
+  // Handle resize drag
+  useEffect(() => {
+    if (!isResizing) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!resizeRef.current) return;
+      // For right-side panel, dragging left increases width
+      const deltaX = resizeRef.current.startX - e.clientX;
+      const newWidth = Math.min(
+        MAX_PANEL_WIDTH,
+        Math.max(MIN_PANEL_WIDTH, resizeRef.current.startWidth + deltaX)
+      );
+      setPanelWidth(newWidth);
+    };
+
+    const handleMouseUp = () => {
+      setIsResizing(false);
+      resizeRef.current = null;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+
+    // Use capture phase to ensure we get all events
+    window.addEventListener('mousemove', handleMouseMove, true);
+    window.addEventListener('mouseup', handleMouseUp, true);
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove, true);
+      window.removeEventListener('mouseup', handleMouseUp, true);
+    };
+  }, [isResizing]);
+
+  const handleResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizing(true);
+    resizeRef.current = { startX: e.clientX, startWidth: panelWidth };
+    document.body.style.cursor = 'ew-resize';
+    document.body.style.userSelect = 'none';
+  }, [panelWidth]);
 
   // Check if we have a properly configured session (with API key)
   const hasActiveSessionWithKey = activeSession && activeSession.apiKeySet;
@@ -120,8 +181,29 @@ ${paperContent.pageText?.slice(0, 2000) || 'No text available'}`;
   };
 
   return (
-    <div className="flex flex-col h-full overflow-hidden bg-gradient-to-b from-indigo-50/50 to-white dark:from-slate-900 dark:to-slate-800 rounded-lg border border-indigo-100 dark:border-slate-700">
-      {/* Header */}
+    <>
+      {/* Panel */}
+      <div
+        className={`fixed top-0 right-0 h-full bg-gradient-to-b from-indigo-50/50 to-white dark:from-slate-900 dark:to-slate-800 border-l border-indigo-100 dark:border-slate-700 shadow-2xl transform z-50 flex flex-col ${
+          isOpen ? 'translate-x-0' : 'translate-x-full'
+        }`}
+        style={{
+          width: `${panelWidth}px`,
+          transition: isResizing ? 'none' : 'transform 300ms ease-in-out',
+        }}
+      >
+        {/* Resize handle on left edge */}
+        <div
+          className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize group z-10 flex items-center"
+          onMouseDown={handleResizeStart}
+        >
+          <div className="absolute left-0 top-0 bottom-0 w-1 bg-transparent group-hover:bg-indigo-400/50 transition-colors" />
+          <div className="absolute left-0 top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity bg-indigo-100 dark:bg-indigo-900 rounded-r px-0.5 py-2">
+            <GripVertical className="w-3 h-4 text-indigo-500" />
+          </div>
+        </div>
+
+        {/* Header */}
       <div className="flex-shrink-0 flex items-center justify-between p-4 border-b border-indigo-100 dark:border-slate-700">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center">
@@ -132,28 +214,44 @@ ${paperContent.pageText?.slice(0, 2000) || 'No text available'}`;
             <p className="text-xs text-slate-500">Chat about the paper</p>
           </div>
         </div>
-        <AISettingsPanel
-          onConfigChange={() => {}}
-          trigger={
-            <Button variant="ghost" size="icon" className="h-8 w-8">
-              <Settings className="w-4 h-4" />
-            </Button>
-          }
-          container={dialogContainer}
-        />
+        {paperId && (
+          <AISessionSettingsPanel
+            paperId={paperId}
+            currentUserId={currentUserId}
+            activeSession={activeSession}
+            onSessionChange={onSessionUpdated}
+            trigger={
+              <Button variant="ghost" size="icon" className="h-8 w-8">
+                <Settings className="w-4 h-4" />
+              </Button>
+            }
+            container={dialogContainer}
+          />
+        )}
       </div>
 
       {/* Configuration Status - Show based on active session */}
-      {!hasActiveSessionWithKey && (
-        <div className="flex-shrink-0 mx-4 mt-4 p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg">
-          <div className="flex items-start gap-2">
-            <AlertCircle className="w-4 h-4 text-amber-600 mt-0.5" />
+      {!hasActiveSessionWithKey && !hideSessionWarning && (
+        <div className="flex-shrink-0 mx-4 mt-4 p-3 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-lg relative">
+          <button
+            onClick={() => setHideSessionWarning(true)}
+            className="absolute top-2 right-2 text-amber-400 hover:text-amber-600 transition-colors"
+            title="Dismiss (I'll read without AI)"
+          >
+            <X className="w-4 h-4" />
+          </button>
+          <div className="flex items-start gap-2 pr-6">
+            <AlertCircle className="w-4 h-4 text-amber-600 mt-0.5 flex-shrink-0" />
             <div className="text-sm">
-              <p className="font-medium text-amber-800 dark:text-amber-200">API Not Configured</p>
+              <p className="font-medium text-amber-800 dark:text-amber-200">
+                {!activeSession
+                  ? "No Active AI Session"
+                  : "API Key Not Configured"}
+              </p>
               <p className="text-amber-600 dark:text-amber-400 text-xs mt-1">
                 {!activeSession
-                  ? "Please create and activate an AI session on the Paper Details page first."
-                  : "Click the settings icon to add your OpenAI API key."}
+                  ? "Activate an AI session to use chat and analysis features."
+                  : "Set an API key for this session, or activate a different session."}
               </p>
             </div>
           </div>
@@ -259,6 +357,15 @@ ${paperContent.pageText?.slice(0, 2000) || 'No text available'}`;
           </Button>
         </div>
       </div>
-    </div>
+      </div>
+
+      {/* Overlay backdrop when panel is open */}
+      {isOpen && onClose && (
+        <div
+          className="fixed inset-0 bg-black/20 z-40"
+          onClick={onClose}
+        />
+      )}
+    </>
   );
 }

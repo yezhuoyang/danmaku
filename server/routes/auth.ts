@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 import { v4 as uuidv4 } from 'uuid';
 import db from '../db.js';
 import { COOKIE_NAME, ONE_YEAR_MS } from '../../shared/const.js';
-import type { RegisterRequest, LoginRequest, User, UpdateProfileRequest, ChangePasswordRequest, UserWithStats, PaperCollection, UserSummary } from '../../shared/types.js';
+import type { RegisterRequest, LoginRequest, User, UpdateProfileRequest, ChangePasswordRequest, UserWithStats, PaperCollection, UserSummary, Notification, NotificationType } from '../../shared/types.js';
 
 const router = Router();
 
@@ -895,6 +895,16 @@ router.post('/follow/:userId', (req: Request, res: Response) => {
       VALUES (?, ?, ?)
     `).run(id, user.id, userId);
 
+    // Notify the followed user
+    createNotification({
+      userId,
+      type: 'follow',
+      actorId: user.id,
+      targetType: 'user',
+      targetId: user.id,
+      targetTitle: `${user.displayName} followed you`,
+    });
+
     res.status(201).json({ success: true });
   } catch (error) {
     console.error('Follow user error:', error);
@@ -1094,6 +1104,188 @@ router.delete('/reviews/:reviewId', (req: Request, res: Response) => {
   } catch (error) {
     console.error('Delete review error:', error);
     res.status(500).json({ error: 'Internal Server Error', message: 'Failed to delete review' });
+  }
+});
+
+// ============================================================================
+// NOTIFICATIONS
+// ============================================================================
+
+// Helper function to create a notification
+export function createNotification(params: {
+  userId: string;           // The user receiving the notification
+  type: NotificationType;
+  actorId: string;          // The user who performed the action
+  targetType?: string;
+  targetId?: string;
+  targetTitle?: string;
+  paperId?: string;
+}): void {
+  // Don't notify users of their own actions
+  if (params.userId === params.actorId) return;
+
+  const id = uuidv4();
+  db.prepare(`
+    INSERT INTO notifications (id, user_id, type, actor_id, target_type, target_id, target_title, paper_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    params.userId,
+    params.type,
+    params.actorId,
+    params.targetType || null,
+    params.targetId || null,
+    params.targetTitle || null,
+    params.paperId || null
+  );
+}
+
+// GET /api/auth/notifications - Get notifications for current user
+router.get('/notifications', (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    if (!user) {
+      return res.status(401).json({ error: 'Unauthorized', message: 'Please log in' });
+    }
+
+    const { limit = '50', offset = '0' } = req.query;
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit as string) || 50));
+    const offsetNum = Math.max(0, parseInt(offset as string) || 0);
+
+    // Get notifications with actor info
+    const notifications = db.prepare(`
+      SELECT n.*, u.display_name as actor_name, u.avatar as actor_avatar, p.title as paper_title
+      FROM notifications n
+      JOIN users u ON n.actor_id = u.id
+      LEFT JOIN papers p ON n.paper_id = p.id
+      WHERE n.user_id = ?
+      ORDER BY n.created_at DESC
+      LIMIT ? OFFSET ?
+    `).all(user.id, limitNum, offsetNum) as any[];
+
+    // Get total and unread counts
+    const totalCount = (db.prepare(`
+      SELECT COUNT(*) as count FROM notifications WHERE user_id = ?
+    `).get(user.id) as any).count;
+
+    const unreadCount = (db.prepare(`
+      SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = 0
+    `).get(user.id) as any).count;
+
+    res.json({
+      notifications: notifications.map(n => ({
+        id: n.id,
+        userId: n.user_id,
+        type: n.type as NotificationType,
+        actorId: n.actor_id,
+        actorName: n.actor_name,
+        actorAvatar: n.actor_avatar || undefined,
+        targetType: n.target_type || undefined,
+        targetId: n.target_id || undefined,
+        targetTitle: n.target_title || undefined,
+        paperId: n.paper_id || undefined,
+        paperTitle: n.paper_title || undefined,
+        isRead: n.is_read === 1,
+        createdAt: n.created_at,
+      } as Notification)),
+      total: totalCount,
+      unreadCount,
+    });
+  } catch (error) {
+    console.error('Get notifications error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to get notifications' });
+  }
+});
+
+// GET /api/auth/notifications/unread-count - Get unread notification count
+router.get('/notifications/unread-count', (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    if (!user) {
+      return res.json({ count: 0 });
+    }
+
+    const result = db.prepare(`
+      SELECT COUNT(*) as count FROM notifications WHERE user_id = ? AND is_read = 0
+    `).get(user.id) as any;
+
+    res.json({ count: result.count });
+  } catch (error) {
+    console.error('Get unread count error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to get unread count' });
+  }
+});
+
+// POST /api/auth/notifications/mark-read - Mark notifications as read
+router.post('/notifications/mark-read', (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    if (!user) {
+      return res.status(401).json({ error: 'Unauthorized', message: 'Please log in' });
+    }
+
+    const { notificationIds } = req.body;
+
+    if (!notificationIds || !Array.isArray(notificationIds)) {
+      // Mark all as read
+      db.prepare(`
+        UPDATE notifications SET is_read = 1 WHERE user_id = ?
+      `).run(user.id);
+    } else if (notificationIds.length > 0) {
+      // Mark specific notifications as read
+      const placeholders = notificationIds.map(() => '?').join(',');
+      db.prepare(`
+        UPDATE notifications SET is_read = 1
+        WHERE user_id = ? AND id IN (${placeholders})
+      `).run(user.id, ...notificationIds);
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Mark notifications read error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to mark notifications as read' });
+  }
+});
+
+// DELETE /api/auth/notifications/:notificationId - Delete a notification
+router.delete('/notifications/:notificationId', (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    if (!user) {
+      return res.status(401).json({ error: 'Unauthorized', message: 'Please log in' });
+    }
+
+    const { notificationId } = req.params;
+
+    const result = db.prepare(`
+      DELETE FROM notifications WHERE id = ? AND user_id = ?
+    `).run(notificationId, user.id);
+
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'Not Found', message: 'Notification not found' });
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete notification error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to delete notification' });
+  }
+});
+
+// DELETE /api/auth/notifications - Clear all notifications
+router.delete('/notifications', (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    if (!user) {
+      return res.status(401).json({ error: 'Unauthorized', message: 'Please log in' });
+    }
+
+    db.prepare(`DELETE FROM notifications WHERE user_id = ?`).run(user.id);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Clear notifications error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to clear notifications' });
   }
 });
 

@@ -12,7 +12,19 @@
       "Bash(npm run server:*)",
       "Bash(ping:*)",
       "Bash(npm run dev:server:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nCheckpoint: First publishable version with full user system, AI features, and deployment configuration\n\nMajor features added:\n- User authentication system \\(register, login, logout\\) with SQLite database\n- Paper management: browse, search, add via ArXiv URL or local PDF\n- AI-powered features: Quiz, Open Questions, Research Ideas generation\n- AI session management with token tracking and multi-model support \\(OpenAI, Anthropic, Google, xAI\\)\n- Sentence and figure/table annotations with discussion threads\n- Like/dislike voting system for annotations and AI content\n- Top Contributors and AI Model Arena rankings\n- User profiles with review history, annotations, and AI sessions\n- Admin panel for user management\n\nDeployment:\n- PM2 ecosystem configuration\n- Nginx reverse proxy config with SSL\n- Deployment documentation for VPS\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(pnpm build:*)",
+      "Bash(npm run build:*)",
+      "Bash(pnpm run build:*)",
+      "Bash(npm run dev:*)",
+      "Bash(npx tsc:*)",
+      "Bash(pnpm run check:*)",
+      "Bash(cmd //c \"taskkill /PID 106244 /F\")",
+      "Bash(npx kill-port:*)",
+      "Bash(sqlite3:*)",
+      "Bash(node dist/index.js:*)"
     ]
   }
 }

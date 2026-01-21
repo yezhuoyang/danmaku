@@ -10,7 +10,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuLabel,
 } from "@/components/ui/dropdown-menu";
-import { ArrowLeft, MessageSquare, User, LogOut, Upload, Bot, Check, ChevronDown, Plus, Key, Zap } from "lucide-react";
+import { ArrowLeft, MessageSquare, User, LogOut, Upload, Bot, Check, ChevronDown, Plus, Key, Zap, Ban } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { PdfAnnotationViewer } from "@/components/PdfAnnotationViewer";
 import { Input } from "@/components/ui/input";
@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/dialog";
 import * as api from "../lib/api";
 import type { PaperWithStats, Annotation, FigureTableRegion, AiAgentHistory, AiSentenceAnalysisData, AiFigureTableAnalysisData } from "../../../shared/types";
+import type { SentenceAnnotation } from "@/components/annotations/types";
 import { toast } from "sonner";
 
 export default function Reader() {
@@ -34,6 +35,7 @@ export default function Reader() {
   const { user, logout, isLoading: authLoading } = useAuth();
   const [paper, setPaper] = useState<PaperWithStats | null>(null);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
+  const [sentenceComments, setSentenceComments] = useState<Map<string, SentenceAnnotation[]>>(new Map());
   const [isLoading, setIsLoading] = useState(true);
 
   // PDF source state
@@ -95,6 +97,28 @@ export default function Reader() {
             } : undefined,
           }));
         setAnnotations(viewerAnnotations);
+
+        // Extract sentence comments (annotations with sentenceId but no highlightRegion)
+        const sentenceCommentsMap = new Map<string, SentenceAnnotation[]>();
+        annotationsResult.annotations
+          .filter((a) => a.sentenceId && !a.content.highlightRegion)
+          .forEach((a) => {
+            const sentenceId = a.sentenceId!;
+            const comment: SentenceAnnotation = {
+              id: a.id,
+              sentenceId: sentenceId,
+              text: a.content.text || "",
+              userId: a.userId,
+              userName: a.userName,
+              userAvatar: a.userAvatar || undefined,
+              timestamp: new Date(a.createdAt * 1000),
+              color: a.content.color,
+              replies: [], // Replies are loaded separately if needed
+            };
+            const existing = sentenceCommentsMap.get(sentenceId) || [];
+            sentenceCommentsMap.set(sentenceId, [...existing, comment]);
+          });
+        setSentenceComments(sentenceCommentsMap);
 
         // Determine PDF URL
         if (paperResult.paper.arxivId) {
@@ -353,6 +377,27 @@ export default function Reader() {
     }
   };
 
+  // Handle deactivating all sessions (reading without AI)
+  const handleDeactivateAllSessions = async () => {
+    if (!paperId) return;
+
+    try {
+      await api.deactivateAllSessions(paperId);
+      // Update the histories list - mark all as inactive
+      setAiAgentHistories(prev =>
+        prev.map(h => ({
+          ...h,
+          isActive: false
+        }))
+      );
+      setActiveSession(null);
+      toast.success("AI session deactivated. Reading without AI.");
+    } catch (error) {
+      console.error("Failed to deactivate sessions:", error);
+      toast.error("Failed to deactivate sessions");
+    }
+  };
+
   // Handle creating a new session
   const handleCreateSession = async () => {
     if (!paperId || !user) {
@@ -528,6 +573,17 @@ export default function Reader() {
                   </div>
                 )}
                 <DropdownMenuItem
+                  onClick={() => !activeSession ? null : handleDeactivateAllSessions()}
+                  className={`cursor-pointer ${!activeSession ? 'bg-slate-100 dark:bg-slate-800' : ''}`}
+                >
+                  <Ban className={`w-4 h-4 mr-2 ${!activeSession ? 'text-slate-600' : 'text-slate-400'}`} />
+                  <span className={!activeSession ? 'text-slate-700 dark:text-slate-200' : ''}>No Session</span>
+                  {!activeSession && (
+                    <span className="ml-auto text-[10px] px-1.5 py-0.5 bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 rounded">Selected</span>
+                  )}
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
                   onClick={handleCreateSession}
                   disabled={isCreatingSession || !user}
                   className="cursor-pointer"
@@ -582,6 +638,7 @@ export default function Reader() {
             paperId={paperId}
             paperTitle={paper.title}
             initialAnnotations={annotations as any}
+            initialSentenceComments={sentenceComments}
             onAnnotationAdded={handleAnnotationAdded}
             onAnnotationDeleted={handleAnnotationDeleted}
             onCommentAdded={handleCommentAdded}

@@ -118,8 +118,9 @@ interface SentenceHighlightLayerProps {
 /**
  * SVG layer that renders sentence highlights with hover/click interactions.
  * Positioned below the regular annotation layer.
+ * Memoized to prevent unnecessary re-renders when parent re-renders.
  */
-export function SentenceHighlightLayer({
+export const SentenceHighlightLayer = memo(function SentenceHighlightLayer({
   sentences,
   hoveredSentenceId,
   selectedSentenceId,
@@ -171,4 +172,4 @@ export function SentenceHighlightLayer({
       })}
     </g>
   );
-}
+});
