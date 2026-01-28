@@ -3,10 +3,26 @@
 
 import type { AiModelProvider } from '../../../shared/types';
 
-// Message format for AI conversations
+// Content part for multimodal messages
+export interface TextContent {
+  type: 'text';
+  text: string;
+}
+
+export interface ImageContent {
+  type: 'image_url';
+  image_url: {
+    url: string;  // base64 data URI or URL
+    detail?: 'low' | 'high' | 'auto';  // Image detail level
+  };
+}
+
+export type MessageContent = TextContent | ImageContent;
+
+// Message format for AI conversations (supports multimodal)
 export interface AIMessage {
   role: 'system' | 'user' | 'assistant';
-  content: string;
+  content: string | MessageContent[];  // String for simple text, array for multimodal
 }
 
 // Request options for chat completion

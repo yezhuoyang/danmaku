@@ -122,22 +122,28 @@ export class OpenAIProvider implements AIProvider {
     };
   }
 
-  private formatMessages(messages: AIMessage[], isOSeriesModel: boolean): AIMessage[] {
-    if (!isOSeriesModel) {
-      return messages;
-    }
-
-    // O-series models: Convert system messages to user messages with a prefix
-    // O1/O3/O4 models don't support the "system" role directly
-    return messages.map(msg => {
-      if (msg.role === 'system') {
+  private formatMessages(messages: AIMessage[], isOSeriesModel: boolean): any[] {
+    // Format messages for OpenAI API (handle both text and multimodal content)
+    const formattedMessages = messages.map(msg => {
+      // Handle O-series models that don't support system role
+      if (isOSeriesModel && msg.role === 'system') {
         return {
           role: 'user',
-          content: `[System Instructions]\n${msg.content}`,
+          content: typeof msg.content === 'string'
+            ? `[System Instructions]\n${msg.content}`
+            : msg.content,
         };
       }
-      return msg;
+
+      // For multimodal messages with array content, keep as-is for OpenAI format
+      // OpenAI expects: content: [{type: 'text', text: '...'}, {type: 'image_url', image_url: {...}}]
+      return {
+        role: msg.role,
+        content: msg.content,
+      };
     });
+
+    return formattedMessages;
   }
 
   private async handleError(response: Response, model: string): Promise<never> {

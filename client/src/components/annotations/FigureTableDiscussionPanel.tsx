@@ -1,5 +1,6 @@
 import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
-import { X, Send, MessageCircle, Reply, Image, Table2, ChevronDown, ChevronUp, Sparkles, AlertTriangle, Lightbulb, Tag, Trash2, LogIn, User, UserPlus, UserMinus, GripVertical, Pencil, Check } from 'lucide-react';
+import { X, Send, MessageCircle, Reply, Image, Table2, ChevronDown, ChevronUp, Sparkles, AlertTriangle, Lightbulb, Tag, Trash2, LogIn, User, UserPlus, UserMinus, GripVertical, Pencil, Check, Eye, FileText, Target, BarChart3, Info, CheckCircle2, XCircle } from 'lucide-react';
+import type { AiFigureTableAnalysisData } from '../../../../shared/types';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -544,6 +545,7 @@ function formatTimestamp(date: Date): string {
 interface FigureTableDiscussionPanelProps {
   figureTable: FigureTable | null;
   annotations: FigureTableAnnotation[];
+  aiAnalysis?: AiFigureTableAnalysisData | null;  // Enhanced AI analysis from multimodal reading
   onAddAnnotation: (annotation: Omit<FigureTableAnnotation, 'id' | 'timestamp'>) => void;
   onAddReply: (annotationId: string, reply: Omit<SentenceAnnotationReply, 'id' | 'timestamp'>) => void;
   onDeleteAnnotation?: (annotationId: string) => void;
@@ -559,6 +561,7 @@ interface FigureTableDiscussionPanelProps {
 export function FigureTableDiscussionPanel({
   figureTable,
   annotations,
+  aiAnalysis,
   onAddAnnotation,
   onAddReply,
   onDeleteAnnotation,
@@ -571,6 +574,7 @@ export function FigureTableDiscussionPanel({
   currentUserId,
 }: FigureTableDiscussionPanelProps) {
   const [newComment, setNewComment] = useState('');
+  const [showAiDetails, setShowAiDetails] = useState(false);
   const [isCaptionExpanded, setIsCaptionExpanded] = useState(false);
 
   // Resizable panel state
@@ -766,6 +770,178 @@ export function FigureTableDiscussionPanel({
                   </>
                 )}
               </button>
+            )}
+          </div>
+        )}
+
+        {/* Enhanced AI Analysis Section */}
+        {aiAnalysis && (aiAnalysis.imageAnalysis || aiAnalysis.captionVerification || aiAnalysis.paperRelevance) && (
+          <div className={`border-b border-slate-200 dark:border-slate-700 ${isFigure ? 'bg-indigo-50/50 dark:bg-indigo-900/10' : 'bg-purple-50/50 dark:bg-purple-900/10'}`}>
+            <button
+              onClick={() => setShowAiDetails(!showAiDetails)}
+              className="w-full p-3 flex items-center justify-between hover:bg-black/5 dark:hover:bg-white/5 transition-colors"
+            >
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-indigo-500" />
+                <span className="text-sm font-medium text-indigo-700 dark:text-indigo-300">
+                  AI Visual Analysis
+                </span>
+                {aiAnalysis.captionVerification && (
+                  <span className={`text-xs px-1.5 py-0.5 rounded ${
+                    aiAnalysis.captionVerification.matches
+                      ? 'bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300'
+                      : 'bg-amber-100 text-amber-700 dark:bg-amber-900/50 dark:text-amber-300'
+                  }`}>
+                    {aiAnalysis.captionVerification.matches ? 'Caption Verified' : 'Caption Issue'}
+                  </span>
+                )}
+              </div>
+              {showAiDetails ? (
+                <ChevronUp className="w-4 h-4 text-slate-400" />
+              ) : (
+                <ChevronDown className="w-4 h-4 text-slate-400" />
+              )}
+            </button>
+
+            {showAiDetails && (
+              <div className="px-4 pb-4 space-y-4">
+                {/* Image Analysis */}
+                {aiAnalysis.imageAnalysis && (
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2 text-xs font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wide">
+                      <Eye className="w-3.5 h-3.5" />
+                      Visual Understanding
+                    </div>
+
+                    {/* Visual Type Badge */}
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs px-2 py-1 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-medium">
+                        {aiAnalysis.imageAnalysis.visualType?.charAt(0).toUpperCase() + aiAnalysis.imageAnalysis.visualType?.slice(1) || 'Unknown'}
+                      </span>
+                    </div>
+
+                    {/* Description */}
+                    <p className="text-sm text-slate-700 dark:text-slate-300">
+                      {aiAnalysis.imageAnalysis.description}
+                    </p>
+
+                    {/* Key Findings */}
+                    {aiAnalysis.imageAnalysis.keyFindings && aiAnalysis.imageAnalysis.keyFindings.length > 0 && (
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-1 text-xs font-medium text-slate-500">
+                          <BarChart3 className="w-3 h-3" />
+                          Key Findings
+                        </div>
+                        <ul className="text-xs text-slate-600 dark:text-slate-400 space-y-0.5 ml-4">
+                          {aiAnalysis.imageAnalysis.keyFindings.map((finding, idx) => (
+                            <li key={idx} className="list-disc">{finding}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+
+                    {/* Data Points */}
+                    {aiAnalysis.imageAnalysis.dataPoints && aiAnalysis.imageAnalysis.dataPoints.length > 0 && (
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-1 text-xs font-medium text-slate-500">
+                          <FileText className="w-3 h-3" />
+                          Extracted Data
+                        </div>
+                        <div className="flex flex-wrap gap-1">
+                          {aiAnalysis.imageAnalysis.dataPoints.map((point, idx) => (
+                            <span key={idx} className="text-xs px-1.5 py-0.5 rounded bg-blue-50 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300">
+                              {point}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Methodology */}
+                    {aiAnalysis.imageAnalysis.methodology && (
+                      <div className="text-xs text-slate-600 dark:text-slate-400">
+                        <span className="font-medium">Methodology: </span>
+                        {aiAnalysis.imageAnalysis.methodology}
+                      </div>
+                    )}
+
+                    {/* Limitations */}
+                    {aiAnalysis.imageAnalysis.limitations && (
+                      <div className="text-xs text-amber-600 dark:text-amber-400 flex items-start gap-1">
+                        <AlertTriangle className="w-3 h-3 mt-0.5 flex-shrink-0" />
+                        {aiAnalysis.imageAnalysis.limitations}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Caption Verification */}
+                {aiAnalysis.captionVerification && (
+                  <div className="space-y-2 pt-2 border-t border-slate-200 dark:border-slate-700">
+                    <div className="flex items-center gap-2 text-xs font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wide">
+                      <Info className="w-3.5 h-3.5" />
+                      Caption Verification
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      {aiAnalysis.captionVerification.matches ? (
+                        <CheckCircle2 className="w-4 h-4 text-green-500" />
+                      ) : (
+                        <XCircle className="w-4 h-4 text-amber-500" />
+                      )}
+                      <span className={`text-sm ${aiAnalysis.captionVerification.matches ? 'text-green-700 dark:text-green-300' : 'text-amber-700 dark:text-amber-300'}`}>
+                        {aiAnalysis.captionVerification.matches ? 'Caption accurately describes the visual' : 'Potential discrepancy detected'}
+                      </span>
+                    </div>
+
+                    {aiAnalysis.captionVerification.discrepancies && (
+                      <p className="text-xs text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/20 p-2 rounded">
+                        {aiAnalysis.captionVerification.discrepancies}
+                      </p>
+                    )}
+
+                    {aiAnalysis.captionVerification.suggestedCaption && (
+                      <div className="text-xs">
+                        <span className="font-medium text-slate-500">Suggested caption: </span>
+                        <span className="text-slate-600 dark:text-slate-400 italic">{aiAnalysis.captionVerification.suggestedCaption}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Paper Relevance */}
+                {aiAnalysis.paperRelevance && (
+                  <div className="space-y-2 pt-2 border-t border-slate-200 dark:border-slate-700">
+                    <div className="flex items-center gap-2 text-xs font-semibold text-slate-600 dark:text-slate-400 uppercase tracking-wide">
+                      <Target className="w-3.5 h-3.5" />
+                      Paper Relevance
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <span className={`text-xs px-2 py-1 rounded-full font-medium ${
+                        aiAnalysis.paperRelevance.importance === 'critical'
+                          ? 'bg-red-100 text-red-700 dark:bg-red-900/50 dark:text-red-300'
+                          : aiAnalysis.paperRelevance.importance === 'supporting'
+                          ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/50 dark:text-blue-300'
+                          : 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
+                      }`}>
+                        {aiAnalysis.paperRelevance.importance?.charAt(0).toUpperCase() + aiAnalysis.paperRelevance.importance?.slice(1)}
+                      </span>
+                      {aiAnalysis.paperRelevance.supportsMainClaim && (
+                        <span className="text-xs px-2 py-1 rounded-full bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300 font-medium">
+                          Supports Main Claim
+                        </span>
+                      )}
+                    </div>
+
+                    {aiAnalysis.paperRelevance.connectionToText && (
+                      <p className="text-sm text-slate-600 dark:text-slate-400">
+                        {aiAnalysis.paperRelevance.connectionToText}
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
             )}
           </div>
         )}

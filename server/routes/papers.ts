@@ -122,17 +122,38 @@ router.get('/recent/danmaku', (_req: Request, res: Response) => {
 });
 
 // Helper to get paper with stats
-function getPaperWithStats(paperId: string): PaperWithStats | null {
+function getPaperWithStats(paperId: string, userId?: string): PaperWithStats | null {
   const paper = db.prepare(`
     SELECT p.*,
+      u.display_name as uploader_name,
+      u.username as uploader_username,
+      u.avatar as uploader_avatar,
+      fp.title as original_paper_title,
       (SELECT COUNT(DISTINCT user_id) FROM reading_sessions WHERE paper_id = p.id) as reader_count,
       (SELECT COUNT(*) FROM annotations WHERE paper_id = p.id) as annotation_count,
       (SELECT 1 FROM ai_analysis WHERE paper_id = p.id) as has_ai_analysis
     FROM papers p
+    LEFT JOIN users u ON p.added_by = u.id
+    LEFT JOIN papers fp ON p.forked_from_id = fp.id
     WHERE p.id = ?
   `).get(paperId) as any;
 
   if (!paper) return null;
+
+  // Determine user's role for this paper
+  let userRole: 'owner' | 'viewer' | 'commenter' | 'editor' | undefined;
+  if (userId) {
+    if (paper.added_by === userId) {
+      userRole = 'owner';
+    } else {
+      const collaborator = db.prepare(
+        'SELECT role FROM paper_collaborators WHERE paper_id = ? AND user_id = ?'
+      ).get(paperId, userId) as any;
+      if (collaborator) {
+        userRole = collaborator.role;
+      }
+    }
+  }
 
   return {
     id: paper.id,
@@ -144,11 +165,50 @@ function getPaperWithStats(paperId: string): PaperWithStats | null {
     addedBy: paper.added_by,
     viewCount: paper.view_count,
     tags: paper.tags ? JSON.parse(paper.tags) : [],
+    activeAvatarUrl: paper.active_avatar_url || undefined,
+    visibility: paper.visibility || 'public',
+    forkedFromId: paper.forked_from_id || undefined,
+    forkCount: paper.fork_count || 0,
     createdAt: paper.created_at,
     readerCount: paper.reader_count || 0,
     annotationCount: paper.annotation_count || 0,
     hasAiAnalysis: !!paper.has_ai_analysis,
+    uploaderName: paper.uploader_name || undefined,
+    uploaderUsername: paper.uploader_username || undefined,
+    uploaderAvatar: paper.uploader_avatar || undefined,
+    userRole,
+    isForked: !!paper.forked_from_id,
+    originalPaperTitle: paper.original_paper_title || undefined,
   };
+}
+
+// Check if user has access to a paper (owner or collaborator)
+function hasAccessToPaper(paperId: string, userId: string | undefined): boolean {
+  if (!userId) return false;
+
+  const paper = db.prepare('SELECT added_by, visibility FROM papers WHERE id = ?').get(paperId) as any;
+  if (!paper) return false;
+
+  // Public papers are accessible to everyone
+  if (paper.visibility === 'public') return true;
+
+  // Check if user is owner
+  if (paper.added_by === userId) return true;
+
+  // Check if user is collaborator
+  const collaborator = db.prepare(
+    'SELECT 1 FROM paper_collaborators WHERE paper_id = ? AND user_id = ?'
+  ).get(paperId, userId);
+
+  return !!collaborator;
+}
+
+// Check if user can modify a paper (owner only)
+function canModifyPaper(paperId: string, userId: string | undefined): boolean {
+  if (!userId) return false;
+
+  const paper = db.prepare('SELECT added_by FROM papers WHERE id = ?').get(paperId) as any;
+  return paper?.added_by === userId;
 }
 
 // GET /api/papers - List papers with optional search
@@ -157,15 +217,30 @@ router.get('/', (req: Request, res: Response) => {
     const { q, limit = 20, offset = 0, sort = 'recent' } = req.query;
     const limitNum = Math.min(parseInt(limit as string) || 20, 100);
     const offsetNum = parseInt(offset as string) || 0;
+    const user = (req as any).user;
+    const userId = user?.id || '';
 
-    let whereClause = '';
+    // Build WHERE clause - filter by search and access control
+    let whereConditions: string[] = [];
     const params: any[] = [];
 
+    // Search condition
     if (q && typeof q === 'string' && q.trim()) {
-      whereClause = 'WHERE p.title LIKE ? OR p.authors LIKE ?';
+      whereConditions.push('(p.title LIKE ? OR p.authors LIKE ?)');
       const searchTerm = `%${q.trim()}%`;
       params.push(searchTerm, searchTerm);
     }
+
+    // Access control: show public papers OR papers user owns OR papers user collaborates on
+    whereConditions.push(`(
+      p.visibility = 'public'
+      OR p.visibility IS NULL
+      OR p.added_by = ?
+      OR EXISTS (SELECT 1 FROM paper_collaborators pc WHERE pc.paper_id = p.id AND pc.user_id = ?)
+    )`);
+    params.push(userId, userId);
+
+    const whereClause = whereConditions.length > 0 ? `WHERE ${whereConditions.join(' AND ')}` : '';
 
     let orderClause = 'ORDER BY p.created_at DESC';
     if (sort === 'popular') {
@@ -174,12 +249,19 @@ router.get('/', (req: Request, res: Response) => {
 
     const papers = db.prepare(`
       SELECT p.*,
+        u.display_name as uploader_name,
+        u.username as uploader_username,
+        u.avatar as uploader_avatar,
+        fp.title as original_paper_title,
         (SELECT COUNT(DISTINCT user_id) FROM reading_sessions WHERE paper_id = p.id) as reader_count,
         (SELECT COUNT(*) FROM annotations WHERE paper_id = p.id) as annotation_count,
         (SELECT 1 FROM ai_analysis WHERE paper_id = p.id) as has_ai_analysis,
         (SELECT COUNT(*) FROM ai_reviews WHERE paper_id = p.id) as ai_review_count,
-        (SELECT AVG((significance_of_problem + novelty_of_solution + correctness + writing_quality + related_work + robustness_of_evaluation) / 6.0) FROM ai_reviews WHERE paper_id = p.id) as ai_review_avg_score
+        (SELECT AVG((significance_of_problem + novelty_of_solution + correctness + writing_quality + related_work + robustness_of_evaluation) / 6.0) FROM ai_reviews WHERE paper_id = p.id) as ai_review_avg_score,
+        (SELECT GROUP_CONCAT(c.id || '::' || c.name || '::' || COALESCE(c.icon, '') || '::' || COALESCE(c.color, ''), '||') FROM paper_categories pc JOIN categories c ON pc.category_id = c.id WHERE pc.paper_id = p.id) as categories_str
       FROM papers p
+      LEFT JOIN users u ON p.added_by = u.id
+      LEFT JOIN papers fp ON p.forked_from_id = fp.id
       ${whereClause}
       ${orderClause}
       LIMIT ? OFFSET ?
@@ -188,6 +270,15 @@ router.get('/', (req: Request, res: Response) => {
     const total = db.prepare(`
       SELECT COUNT(*) as count FROM papers p ${whereClause}
     `).get(...params) as any;
+
+    // Helper to parse categories string
+    const parseCategories = (categoriesStr: string | null) => {
+      if (!categoriesStr) return [];
+      return categoriesStr.split('||').map(catStr => {
+        const [id, name, icon, color] = catStr.split('::');
+        return { id, name, icon: icon || undefined, color: color || undefined };
+      });
+    };
 
     const papersWithStats: PaperWithStats[] = papers.map(p => ({
       id: p.id,
@@ -199,18 +290,413 @@ router.get('/', (req: Request, res: Response) => {
       addedBy: p.added_by,
       viewCount: p.view_count,
       tags: p.tags ? JSON.parse(p.tags) : [],
+      activeAvatarUrl: p.active_avatar_url || undefined,
+      visibility: p.visibility || 'public',
+      forkedFromId: p.forked_from_id || undefined,
+      forkCount: p.fork_count || 0,
       createdAt: p.created_at,
       readerCount: p.reader_count || 0,
       annotationCount: p.annotation_count || 0,
       hasAiAnalysis: !!p.has_ai_analysis,
       aiReviewCount: p.ai_review_count || 0,
       aiReviewAvgScore: p.ai_review_avg_score || undefined,
+      uploaderName: p.uploader_name || undefined,
+      uploaderUsername: p.uploader_username || undefined,
+      uploaderAvatar: p.uploader_avatar || undefined,
+      categories: parseCategories(p.categories_str),
+      isForked: !!p.forked_from_id,
+      originalPaperTitle: p.original_paper_title || undefined,
     }));
 
     res.json({ papers: papersWithStats, total: total.count });
   } catch (error) {
     console.error('List papers error:', error);
     res.status(500).json({ error: 'Internal Server Error', message: 'Failed to list papers' });
+  }
+});
+
+// ============================================================================
+// UNIFIED SEARCH - Search across Papers, Debates, and Challenge Problems
+// ============================================================================
+
+interface UnifiedSearchResult {
+  papers: {
+    items: any[];
+    total: number;
+  };
+  debates: {
+    items: any[];
+    total: number;
+  };
+  challenges: {
+    items: any[];
+    total: number;
+  };
+  paperGroups: {
+    items: any[];
+    total: number;
+  };
+  insights: {
+    items: any[];
+    total: number;
+  };
+}
+
+// GET /api/papers/unified-search - Search across all content types
+router.get('/unified-search', (req: Request, res: Response) => {
+  try {
+    const { q, types, limit = 10, sort = 'recent' } = req.query;
+    const limitNum = Math.min(parseInt(limit as string) || 10, 50);
+    const user = (req as any).user;
+    const currentUserId = user?.id;
+
+    // Parse types filter (default: all types)
+    let searchTypes = ['papers', 'debates', 'challenges', 'paperGroups', 'insights'];
+    if (types && typeof types === 'string') {
+      searchTypes = types.split(',').filter(t => ['papers', 'debates', 'challenges', 'paperGroups', 'insights'].includes(t));
+    }
+
+    const searchTerm = q && typeof q === 'string' && q.trim() ? `%${q.trim()}%` : null;
+
+    const result: UnifiedSearchResult = {
+      papers: { items: [], total: 0 },
+      debates: { items: [], total: 0 },
+      challenges: { items: [], total: 0 },
+      paperGroups: { items: [], total: 0 },
+      insights: { items: [], total: 0 },
+    };
+
+    // Search Papers
+    if (searchTypes.includes('papers')) {
+      let paperWhere = '';
+      const paperParams: any[] = [];
+
+      if (searchTerm) {
+        paperWhere = 'WHERE p.title LIKE ? OR p.authors LIKE ? OR p.abstract LIKE ?';
+        paperParams.push(searchTerm, searchTerm, searchTerm);
+      }
+
+      const orderClause = sort === 'popular'
+        ? 'ORDER BY reader_count DESC, p.created_at DESC'
+        : 'ORDER BY p.created_at DESC';
+
+      const papers = db.prepare(`
+        SELECT p.*,
+          u.display_name as uploader_name,
+          u.username as uploader_username,
+          u.avatar as uploader_avatar,
+          (SELECT COUNT(DISTINCT user_id) FROM reading_sessions WHERE paper_id = p.id) as reader_count,
+          (SELECT COUNT(*) FROM annotations WHERE paper_id = p.id) as annotation_count,
+          (SELECT 1 FROM ai_analysis WHERE paper_id = p.id) as has_ai_analysis,
+          (SELECT COUNT(*) FROM ai_reviews WHERE paper_id = p.id) as ai_review_count,
+          (SELECT AVG((significance_of_problem + novelty_of_solution + correctness + writing_quality + related_work + robustness_of_evaluation) / 6.0) FROM ai_reviews WHERE paper_id = p.id) as ai_review_avg_score
+        FROM papers p
+        LEFT JOIN users u ON p.added_by = u.id
+        ${paperWhere}
+        ${orderClause}
+        LIMIT ?
+      `).all(...paperParams, limitNum) as any[];
+
+      const paperTotal = db.prepare(`SELECT COUNT(*) as count FROM papers p ${paperWhere}`).get(...paperParams) as any;
+
+      result.papers = {
+        items: papers.map(p => ({
+          id: p.id,
+          type: 'paper' as const,
+          arxivId: p.arxiv_id,
+          title: p.title,
+          authors: p.authors ? JSON.parse(p.authors) : [],
+          abstract: p.abstract,
+          viewCount: p.view_count,
+          tags: p.tags ? JSON.parse(p.tags) : [],
+          activeAvatarUrl: p.active_avatar_url || undefined,
+          createdAt: p.created_at,
+          readerCount: p.reader_count || 0,
+          annotationCount: p.annotation_count || 0,
+          hasAiAnalysis: !!p.has_ai_analysis,
+          aiReviewCount: p.ai_review_count || 0,
+          aiReviewAvgScore: p.ai_review_avg_score || undefined,
+          uploaderName: p.uploader_name || undefined,
+          uploaderUsername: p.uploader_username || undefined,
+          uploaderAvatar: p.uploader_avatar || undefined,
+        })),
+        total: paperTotal.count,
+      };
+    }
+
+    // Search Debates (public debates only for non-auth search)
+    if (searchTypes.includes('debates')) {
+      let debateWhere = "WHERE ds.status IN ('active', 'concluded')"; // Only show active/concluded debates
+      const debateParams: any[] = [];
+
+      if (searchTerm) {
+        debateWhere += ' AND (ds.title LIKE ? OR ds.topic LIKE ?)';
+        debateParams.push(searchTerm, searchTerm);
+      }
+
+      const orderClause = sort === 'popular'
+        ? 'ORDER BY (ds.total_tokens_affirmative + ds.total_tokens_negative + ds.total_tokens_judge) DESC, ds.updated_at DESC'
+        : 'ORDER BY ds.updated_at DESC';
+
+      const debates = db.prepare(`
+        SELECT ds.*, u.display_name as user_name, u.avatar as user_avatar
+        FROM debate_sessions ds
+        JOIN users u ON ds.user_id = u.id
+        ${debateWhere}
+        ${orderClause}
+        LIMIT ?
+      `).all(...debateParams, limitNum) as any[];
+
+      const debateTotal = db.prepare(`
+        SELECT COUNT(*) as count FROM debate_sessions ds ${debateWhere}
+      `).get(...debateParams) as any;
+
+      result.debates = {
+        items: debates.map(d => ({
+          id: d.id,
+          type: 'debate' as const,
+          title: d.title,
+          topic: d.topic,
+          status: d.status,
+          userName: d.user_name,
+          userAvatar: d.user_avatar,
+          turnCount: d.turn_count,
+          maxTurns: d.max_turns,
+          winner: d.winner,
+          conclusion: d.conclusion ? d.conclusion.substring(0, 200) + (d.conclusion.length > 200 ? '...' : '') : null,
+          totalTokens: (d.total_tokens_affirmative || 0) + (d.total_tokens_negative || 0) + (d.total_tokens_judge || 0),
+          createdAt: d.created_at,
+          updatedAt: d.updated_at,
+        })),
+        total: debateTotal.count,
+      };
+    }
+
+    // Search Challenge Problems
+    if (searchTypes.includes('challenges')) {
+      let challengeWhere = 'WHERE cp.parent_id IS NULL'; // Only root problems by default
+      const challengeParams: any[] = [];
+
+      if (searchTerm) {
+        challengeWhere += ' AND (cp.title LIKE ? OR cp.description LIKE ?)';
+        challengeParams.push(searchTerm, searchTerm);
+      }
+
+      let orderClause: string;
+      if (sort === 'popular') {
+        orderClause = 'ORDER BY (cp.upvotes - cp.downvotes) DESC, cp.created_at DESC';
+      } else if (sort === 'discussed') {
+        orderClause = 'ORDER BY cp.comment_count DESC, cp.created_at DESC';
+      } else {
+        orderClause = 'ORDER BY cp.created_at DESC';
+      }
+
+      const challenges = db.prepare(`
+        SELECT cp.*,
+          u.display_name as user_name, u.avatar as user_avatar,
+          p.title as paper_title
+        FROM challenge_problems cp
+        JOIN users u ON cp.user_id = u.id
+        LEFT JOIN papers p ON cp.paper_id = p.id
+        ${challengeWhere}
+        ${orderClause}
+        LIMIT ?
+      `).all(...challengeParams, limitNum) as any[];
+
+      const challengeTotal = db.prepare(`
+        SELECT COUNT(*) as count FROM challenge_problems cp ${challengeWhere}
+      `).get(...challengeParams) as any;
+
+      result.challenges = {
+        items: challenges.map(c => ({
+          id: c.id,
+          type: 'challenge' as const,
+          problemType: c.type,
+          status: c.status,
+          title: c.title,
+          description: c.description ? c.description.substring(0, 200) + (c.description.length > 200 ? '...' : '') : null,
+          paperId: c.paper_id,
+          paperTitle: c.paper_title,
+          userName: c.user_name,
+          userAvatar: c.user_avatar,
+          importance: c.importance,
+          area: c.area,
+          tags: c.tags ? JSON.parse(c.tags) : [],
+          upvotes: c.upvotes,
+          downvotes: c.downvotes,
+          commentCount: c.comment_count,
+          childCount: c.child_count,
+          createdAt: c.created_at,
+        })),
+        total: challengeTotal.count,
+      };
+    }
+
+    // Search Paper Groups (public groups + user's own private groups)
+    if (searchTypes.includes('paperGroups')) {
+      let groupWhere: string;
+      const groupParams: any[] = [];
+
+      if (currentUserId) {
+        // Include public groups OR user's own groups (public or private)
+        groupWhere = "WHERE (pg.visibility = 'public' OR pg.user_id = ?)";
+        groupParams.push(currentUserId);
+      } else {
+        // Only public groups for unauthenticated users
+        groupWhere = "WHERE pg.visibility = 'public'";
+      }
+
+      if (searchTerm) {
+        groupWhere += ' AND (pg.name LIKE ? OR pg.description LIKE ?)';
+        groupParams.push(searchTerm, searchTerm);
+      }
+
+      const orderClause = sort === 'popular'
+        ? 'ORDER BY paper_count DESC, pg.created_at DESC'
+        : 'ORDER BY pg.created_at DESC';
+
+      const groups = db.prepare(`
+        SELECT pg.*,
+          u.display_name as user_name, u.avatar as user_avatar,
+          (SELECT COUNT(*) FROM paper_group_members WHERE group_id = pg.id) as paper_count
+        FROM paper_groups pg
+        JOIN users u ON pg.user_id = u.id
+        ${groupWhere}
+        ${orderClause}
+        LIMIT ?
+      `).all(...groupParams, limitNum) as any[];
+
+      const groupTotal = db.prepare(`
+        SELECT COUNT(*) as count FROM paper_groups pg ${groupWhere}
+      `).get(...groupParams) as any;
+
+      result.paperGroups = {
+        items: groups.map(g => ({
+          id: g.id,
+          type: 'paperGroup' as const,
+          name: g.name,
+          description: g.description ? g.description.substring(0, 200) + (g.description.length > 200 ? '...' : '') : null,
+          visibility: g.visibility,
+          userId: g.user_id,
+          userName: g.user_name,
+          userAvatar: g.user_avatar,
+          paperCount: g.paper_count || 0,
+          createdAt: g.created_at,
+          updatedAt: g.updated_at,
+        })),
+        total: groupTotal.count,
+      };
+    }
+
+    // Search Insights (Open Questions & Research Ideas from AI sessions)
+    if (searchTypes.includes('insights') && searchTerm) {
+      // Search for open questions and research ideas stored in ai_agent_history
+      const insightsQuery = db.prepare(`
+        SELECT h.id as session_id, h.paper_id, h.user_id, h.title as session_title,
+               h.model_used, h.open_questions, h.research_ideas, h.is_public, h.updated_at,
+               p.title as paper_title, p.arxiv_id,
+               u.display_name as user_name, u.avatar as user_avatar
+        FROM ai_agent_history h
+        LEFT JOIN papers p ON h.paper_id = p.id
+        LEFT JOIN users u ON h.user_id = u.id
+        WHERE h.is_public = 1
+          AND (h.open_questions IS NOT NULL OR h.research_ideas IS NOT NULL)
+          AND (
+            h.open_questions LIKE ?
+            OR h.research_ideas LIKE ?
+            OR p.title LIKE ?
+          )
+        ORDER BY h.updated_at DESC
+        LIMIT ?
+      `).all(searchTerm, searchTerm, searchTerm, limitNum * 2) as any[];
+
+      const matchedInsights: any[] = [];
+
+      for (const session of insightsQuery) {
+        // Parse and search through open questions
+        if (session.open_questions) {
+          try {
+            const questions = JSON.parse(session.open_questions);
+            const searchLower = (q as string).toLowerCase();
+            for (const question of questions) {
+              if (
+                question.question?.toLowerCase().includes(searchLower) ||
+                question.context?.toLowerCase().includes(searchLower) ||
+                question.relatedTopics?.some((t: string) => t.toLowerCase().includes(searchLower))
+              ) {
+                matchedInsights.push({
+                  id: `${session.session_id}-q-${question.id || Math.random().toString(36).slice(2)}`,
+                  type: 'open_question' as const,
+                  sessionId: session.session_id,
+                  paperId: session.paper_id,
+                  paperTitle: session.paper_title,
+                  arxivId: session.arxiv_id,
+                  title: question.question,
+                  description: question.context,
+                  importance: question.importance,
+                  relatedTopics: question.relatedTopics || [],
+                  userId: session.user_id,
+                  userName: session.user_name,
+                  userAvatar: session.user_avatar,
+                  modelUsed: session.model_used,
+                  updatedAt: session.updated_at,
+                });
+              }
+            }
+          } catch (e) {
+            // Ignore parsing errors
+          }
+        }
+
+        // Parse and search through research ideas
+        if (session.research_ideas) {
+          try {
+            const ideas = JSON.parse(session.research_ideas);
+            const searchLower = (q as string).toLowerCase();
+            for (const idea of ideas) {
+              if (
+                idea.title?.toLowerCase().includes(searchLower) ||
+                idea.description?.toLowerCase().includes(searchLower) ||
+                idea.methodology?.toLowerCase().includes(searchLower) ||
+                idea.expectedOutcome?.toLowerCase().includes(searchLower)
+              ) {
+                matchedInsights.push({
+                  id: `${session.session_id}-i-${idea.id || Math.random().toString(36).slice(2)}`,
+                  type: 'research_idea' as const,
+                  sessionId: session.session_id,
+                  paperId: session.paper_id,
+                  paperTitle: session.paper_title,
+                  arxivId: session.arxiv_id,
+                  title: idea.title,
+                  description: idea.description,
+                  methodology: idea.methodology,
+                  expectedOutcome: idea.expectedOutcome,
+                  feasibility: idea.feasibility,
+                  novelty: idea.novelty,
+                  userId: session.user_id,
+                  userName: session.user_name,
+                  userAvatar: session.user_avatar,
+                  modelUsed: session.model_used,
+                  updatedAt: session.updated_at,
+                });
+              }
+            }
+          } catch (e) {
+            // Ignore parsing errors
+          }
+        }
+      }
+
+      result.insights = {
+        items: matchedInsights.slice(0, limitNum),
+        total: matchedInsights.length,
+      };
+    }
+
+    res.json(result);
+  } catch (error) {
+    console.error('Unified search error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to perform unified search' });
   }
 });
 
@@ -855,41 +1341,13 @@ Respond with ONLY this JSON:
 // ============================================================================
 // OPEN QUESTIONS & RESEARCH IDEAS (AI INSIGHTS)
 // NOTE: These routes MUST be defined before /:id to avoid route conflicts
+// NOTE: /insights/public MUST come before /insights/:historyId to avoid "public" being treated as a historyId
 // ============================================================================
 
 import type { OpenQuestion, ResearchIdea, GenerateOpenQuestionsResponse, GenerateResearchIdeasResponse } from '../../shared/types.js';
 
-// GET /api/papers/:paperId/insights/:historyId - Get cached insights for a session
-router.get('/:paperId/insights/:historyId', requireAuth, (req: Request, res: Response) => {
-  try {
-    const { paperId, historyId } = req.params;
-    const user = (req as any).user;
-
-    // Verify the session exists and belongs to the user
-    const session = db.prepare(`
-      SELECT * FROM ai_agent_history WHERE id = ? AND paper_id = ?
-    `).get(historyId, paperId) as any;
-
-    if (!session) {
-      return res.status(404).json({ error: 'Not Found', message: 'AI session not found' });
-    }
-
-    if (session.user_id !== user.id) {
-      return res.status(403).json({ error: 'Forbidden', message: 'This is not your AI session' });
-    }
-
-    // Parse stored insights from session
-    const openQuestions = session.open_questions ? JSON.parse(session.open_questions) : undefined;
-    const researchIdeas = session.research_ideas ? JSON.parse(session.research_ideas) : undefined;
-
-    res.json({ openQuestions, researchIdeas });
-  } catch (error) {
-    console.error('Get insights error:', error);
-    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to get insights' });
-  }
-});
-
 // GET /api/papers/:paperId/insights/public - Get all public insights for a paper
+// NOTE: This route MUST be before /:paperId/insights/:historyId
 router.get('/:paperId/insights/public', (req: Request, res: Response) => {
   try {
     const { paperId } = req.params;
@@ -922,6 +1380,36 @@ router.get('/:paperId/insights/public', (req: Request, res: Response) => {
   } catch (error) {
     console.error('Get public insights error:', error);
     res.status(500).json({ error: 'Internal Server Error', message: 'Failed to get public insights' });
+  }
+});
+
+// GET /api/papers/:paperId/insights/:historyId - Get cached insights for a session
+router.get('/:paperId/insights/:historyId', requireAuth, (req: Request, res: Response) => {
+  try {
+    const { paperId, historyId } = req.params;
+    const user = (req as any).user;
+
+    // Verify the session exists and belongs to the user
+    const session = db.prepare(`
+      SELECT * FROM ai_agent_history WHERE id = ? AND paper_id = ?
+    `).get(historyId, paperId) as any;
+
+    if (!session) {
+      return res.status(404).json({ error: 'Not Found', message: 'AI session not found' });
+    }
+
+    if (session.user_id !== user.id) {
+      return res.status(403).json({ error: 'Forbidden', message: 'This is not your AI session' });
+    }
+
+    // Parse stored insights from session
+    const openQuestions = session.open_questions ? JSON.parse(session.open_questions) : undefined;
+    const researchIdeas = session.research_ideas ? JSON.parse(session.research_ideas) : undefined;
+
+    res.json({ openQuestions, researchIdeas });
+  } catch (error) {
+    console.error('Get insights error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to get insights' });
   }
 });
 
@@ -1681,11 +2169,23 @@ router.post('/likes/batch', (req: Request, res: Response) => {
 router.get('/:id', (req: Request, res: Response) => {
   try {
     const { id } = req.params;
+    const user = (req as any).user;
+
+    // Check if paper exists and get basic info
+    const basicPaper = db.prepare('SELECT visibility, added_by FROM papers WHERE id = ?').get(id) as any;
+    if (!basicPaper) {
+      return res.status(404).json({ error: 'Not Found', message: 'Paper not found' });
+    }
+
+    // Access control check for private papers
+    if (basicPaper.visibility === 'private' && !hasAccessToPaper(id, user?.id)) {
+      return res.status(403).json({ error: 'Forbidden', message: 'This paper is private' });
+    }
 
     // Increment view count
     db.prepare('UPDATE papers SET view_count = view_count + 1 WHERE id = ?').run(id);
 
-    const paper = getPaperWithStats(id);
+    const paper = getPaperWithStats(id, user?.id);
 
     if (!paper) {
       return res.status(404).json({ error: 'Not Found', message: 'Paper not found' });
@@ -2104,6 +2604,632 @@ router.get('/arxiv/:arxivId', async (req: Request, res: Response) => {
 });
 
 // ============================================================================
+// AI PAPER DISCOVERY - SEMANTIC SCHOLAR API
+// ============================================================================
+
+// Interface for Semantic Scholar paper search result
+interface SemanticScholarPaper {
+  paperId: string;
+  externalIds?: {
+    ArXiv?: string;
+    DOI?: string;
+  };
+  title: string;
+  authors: Array<{ name: string }>;
+  abstract?: string;
+  year?: number;
+  citationCount?: number;
+  url?: string;
+  venue?: string;
+  isOpenAccess?: boolean;
+  openAccessPdf?: { url: string };
+}
+
+// GET /api/papers/discover/search - Search for papers via Semantic Scholar
+router.get('/discover/search', async (req: Request, res: Response) => {
+  try {
+    const { q, limit = 10, offset = 0, year, fields } = req.query;
+
+    if (!q || typeof q !== 'string' || !q.trim()) {
+      return res.status(400).json({ error: 'Bad Request', message: 'Query parameter "q" is required' });
+    }
+
+    const searchQuery = encodeURIComponent(q.trim());
+    const limitNum = Math.min(parseInt(limit as string) || 10, 50);
+    const offsetNum = parseInt(offset as string) || 0;
+
+    // Semantic Scholar API fields to request
+    const requestedFields = fields || 'paperId,externalIds,title,authors,abstract,year,citationCount,url,venue,isOpenAccess,openAccessPdf';
+
+    let apiUrl = `https://api.semanticscholar.org/graph/v1/paper/search?query=${searchQuery}&fields=${requestedFields}&limit=${limitNum}&offset=${offsetNum}`;
+
+    // Add year filter if specified
+    if (year) {
+      apiUrl += `&year=${year}`;
+    }
+
+    const response = await fetch(apiUrl, {
+      headers: {
+        'Accept': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('Semantic Scholar API error:', response.status, errorText);
+      return res.status(response.status).json({
+        error: 'External API Error',
+        message: `Semantic Scholar API returned ${response.status}`,
+      });
+    }
+
+    const data = await response.json() as {
+      total: number;
+      offset: number;
+      next?: number;
+      data: SemanticScholarPaper[];
+    };
+
+    // Transform to our format
+    const papers = (data.data || []).map((p: SemanticScholarPaper) => ({
+      semanticScholarId: p.paperId,
+      arxivId: p.externalIds?.ArXiv || null,
+      doi: p.externalIds?.DOI || null,
+      title: p.title || 'Untitled',
+      authors: (p.authors || []).map(a => a.name),
+      abstract: p.abstract || null,
+      year: p.year || null,
+      citationCount: p.citationCount || 0,
+      url: p.url || null,
+      venue: p.venue || null,
+      isOpenAccess: p.isOpenAccess || false,
+      pdfUrl: p.openAccessPdf?.url || (p.externalIds?.ArXiv ? `https://arxiv.org/pdf/${p.externalIds.ArXiv}.pdf` : null),
+    }));
+
+    res.json({
+      papers,
+      total: data.total || 0,
+      offset: data.offset || 0,
+      hasMore: data.next !== undefined,
+    });
+  } catch (error) {
+    console.error('Semantic Scholar search error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to search papers' });
+  }
+});
+
+// GET /api/papers/discover/related/:paperId - Find papers related to an existing paper
+router.get('/discover/related/:paperId', async (req: Request, res: Response) => {
+  try {
+    const { paperId } = req.params;
+    const { type = 'recommendations', limit = 10 } = req.query;
+
+    // Get paper from our database
+    const paper = db.prepare('SELECT arxiv_id, title FROM papers WHERE id = ?').get(paperId) as any;
+    if (!paper) {
+      return res.status(404).json({ error: 'Not Found', message: 'Paper not found' });
+    }
+
+    let semanticScholarId: string | null = null;
+
+    // Try to find the paper in Semantic Scholar by arXiv ID first
+    if (paper.arxiv_id) {
+      const lookupUrl = `https://api.semanticscholar.org/graph/v1/paper/arXiv:${paper.arxiv_id}?fields=paperId`;
+      try {
+        const lookupResponse = await fetch(lookupUrl);
+        if (lookupResponse.ok) {
+          const lookupData = await lookupResponse.json();
+          semanticScholarId = lookupData.paperId;
+        }
+      } catch (e) {
+        console.warn('Failed to lookup paper by arXiv ID:', e);
+      }
+    }
+
+    // If not found by arXiv ID, search by title
+    if (!semanticScholarId) {
+      const searchUrl = `https://api.semanticscholar.org/graph/v1/paper/search?query=${encodeURIComponent(paper.title)}&fields=paperId&limit=1`;
+      try {
+        const searchResponse = await fetch(searchUrl);
+        if (searchResponse.ok) {
+          const searchData = await searchResponse.json();
+          if (searchData.data && searchData.data.length > 0) {
+            semanticScholarId = searchData.data[0].paperId;
+          }
+        }
+      } catch (e) {
+        console.warn('Failed to search paper by title:', e);
+      }
+    }
+
+    if (!semanticScholarId) {
+      return res.json({ papers: [], message: 'Could not find paper in Semantic Scholar' });
+    }
+
+    const limitNum = Math.min(parseInt(limit as string) || 10, 50);
+    const requestedFields = 'paperId,externalIds,title,authors,abstract,year,citationCount,url,venue,isOpenAccess,openAccessPdf';
+
+    let relatedPapers: SemanticScholarPaper[] = [];
+
+    if (type === 'citations') {
+      // Get papers that cite this paper
+      const citationsUrl = `https://api.semanticscholar.org/graph/v1/paper/${semanticScholarId}/citations?fields=${requestedFields}&limit=${limitNum}`;
+      const response = await fetch(citationsUrl);
+      if (response.ok) {
+        const data = await response.json();
+        relatedPapers = (data.data || []).map((c: any) => c.citingPaper);
+      }
+    } else if (type === 'references') {
+      // Get papers this paper references
+      const referencesUrl = `https://api.semanticscholar.org/graph/v1/paper/${semanticScholarId}/references?fields=${requestedFields}&limit=${limitNum}`;
+      const response = await fetch(referencesUrl);
+      if (response.ok) {
+        const data = await response.json();
+        relatedPapers = (data.data || []).map((r: any) => r.citedPaper);
+      }
+    } else {
+      // Get recommended papers (default)
+      const recommendationsUrl = `https://api.semanticscholar.org/recommendations/v1/papers/forpaper/${semanticScholarId}?fields=${requestedFields}&limit=${limitNum}`;
+      const response = await fetch(recommendationsUrl);
+      if (response.ok) {
+        const data = await response.json();
+        relatedPapers = data.recommendedPapers || [];
+      }
+    }
+
+    // Transform to our format
+    const papers = relatedPapers
+      .filter((p: SemanticScholarPaper) => p && p.title)
+      .map((p: SemanticScholarPaper) => ({
+        semanticScholarId: p.paperId,
+        arxivId: p.externalIds?.ArXiv || null,
+        doi: p.externalIds?.DOI || null,
+        title: p.title || 'Untitled',
+        authors: (p.authors || []).map(a => a.name),
+        abstract: p.abstract || null,
+        year: p.year || null,
+        citationCount: p.citationCount || 0,
+        url: p.url || null,
+        venue: p.venue || null,
+        isOpenAccess: p.isOpenAccess || false,
+        pdfUrl: p.openAccessPdf?.url || (p.externalIds?.ArXiv ? `https://arxiv.org/pdf/${p.externalIds.ArXiv}.pdf` : null),
+      }));
+
+    res.json({ papers, semanticScholarId, type });
+  } catch (error) {
+    console.error('Related papers error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to get related papers' });
+  }
+});
+
+// GET /api/papers/discover/trending - Get trending papers from Semantic Scholar
+router.get('/discover/trending', async (req: Request, res: Response) => {
+  try {
+    const { topic, limit = 10 } = req.query;
+    const limitNum = Math.min(parseInt(limit as string) || 10, 50);
+
+    // Search for recent, highly cited papers
+    let query = topic || 'machine learning'; // Default topic
+    const currentYear = new Date().getFullYear();
+
+    const searchUrl = `https://api.semanticscholar.org/graph/v1/paper/search?query=${encodeURIComponent(query as string)}&fields=paperId,externalIds,title,authors,abstract,year,citationCount,url,venue,isOpenAccess,openAccessPdf&limit=${limitNum}&year=${currentYear - 1}-${currentYear}`;
+
+    const response = await fetch(searchUrl);
+    if (!response.ok) {
+      return res.status(response.status).json({
+        error: 'External API Error',
+        message: `Semantic Scholar API returned ${response.status}`,
+      });
+    }
+
+    const data = await response.json();
+
+    // Sort by citation count and transform
+    const papers = ((data.data || []) as SemanticScholarPaper[])
+      .sort((a, b) => (b.citationCount || 0) - (a.citationCount || 0))
+      .map((p: SemanticScholarPaper) => ({
+        semanticScholarId: p.paperId,
+        arxivId: p.externalIds?.ArXiv || null,
+        doi: p.externalIds?.DOI || null,
+        title: p.title || 'Untitled',
+        authors: (p.authors || []).map(a => a.name),
+        abstract: p.abstract || null,
+        year: p.year || null,
+        citationCount: p.citationCount || 0,
+        url: p.url || null,
+        venue: p.venue || null,
+        isOpenAccess: p.isOpenAccess || false,
+        pdfUrl: p.openAccessPdf?.url || (p.externalIds?.ArXiv ? `https://arxiv.org/pdf/${p.externalIds.ArXiv}.pdf` : null),
+      }));
+
+    res.json({ papers, topic: query });
+  } catch (error) {
+    console.error('Trending papers error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to get trending papers' });
+  }
+});
+
+// POST /api/papers/discover/batch-add - Add multiple discovered papers at once
+router.post('/discover/batch-add', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    const { papers } = req.body as {
+      papers: Array<{
+        arxivId?: string;
+        title: string;
+        authors: string[];
+        abstract?: string;
+      }>;
+    };
+
+    if (!papers || !Array.isArray(papers) || papers.length === 0) {
+      return res.status(400).json({ error: 'Bad Request', message: 'Papers array is required' });
+    }
+
+    if (papers.length > 20) {
+      return res.status(400).json({ error: 'Bad Request', message: 'Maximum 20 papers can be added at once' });
+    }
+
+    const results: Array<{ paper: PaperWithStats; isNew: boolean } | { error: string; title: string }> = [];
+
+    for (const p of papers) {
+      try {
+        if (!p.title) {
+          results.push({ error: 'Title is required', title: p.title || 'Unknown' });
+          continue;
+        }
+
+        // Check if paper already exists by arXiv ID
+        if (p.arxivId) {
+          const existing = db.prepare('SELECT id FROM papers WHERE arxiv_id = ?').get(p.arxivId) as any;
+          if (existing) {
+            const paper = getPaperWithStats(existing.id);
+            if (paper) {
+              results.push({ paper, isNew: false });
+            }
+            continue;
+          }
+        }
+
+        // Check by title (fuzzy match)
+        const titleLower = p.title.toLowerCase().trim();
+        const existingByTitle = db.prepare(`
+          SELECT id FROM papers WHERE LOWER(title) = ?
+        `).get(titleLower) as any;
+
+        if (existingByTitle) {
+          const paper = getPaperWithStats(existingByTitle.id);
+          if (paper) {
+            results.push({ paper, isNew: false });
+          }
+          continue;
+        }
+
+        // Create new paper
+        const paperId = uuidv4();
+        db.prepare(`
+          INSERT INTO papers (id, arxiv_id, title, authors, abstract, added_by)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(paperId, p.arxivId || null, p.title, JSON.stringify(p.authors || []), p.abstract || null, user.id);
+
+        const paper = getPaperWithStats(paperId);
+        if (paper) {
+          results.push({ paper, isNew: true });
+        }
+      } catch (err: any) {
+        results.push({ error: err.message || 'Failed to add paper', title: p.title || 'Unknown' });
+      }
+    }
+
+    const addedCount = results.filter(r => 'paper' in r && r.isNew).length;
+    const existingCount = results.filter(r => 'paper' in r && !r.isNew).length;
+    const errorCount = results.filter(r => 'error' in r).length;
+
+    res.json({
+      results,
+      summary: {
+        added: addedCount,
+        existing: existingCount,
+        errors: errorCount,
+      },
+    });
+  } catch (error) {
+    console.error('Batch add papers error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to add papers' });
+  }
+});
+
+// ============================================================================
+// AI-POWERED PAPER SEARCH (Research Assistant)
+// ============================================================================
+
+// Interface for AI-curated paper result
+interface AICuratedPaper {
+  paper: {
+    semanticScholarId: string;
+    arxivId: string | null;
+    doi: string | null;
+    title: string;
+    authors: string[];
+    abstract: string | null;
+    year: number | null;
+    citationCount: number;
+    url: string | null;
+    venue: string | null;
+    isOpenAccess: boolean;
+    pdfUrl: string | null;
+  };
+  relevanceScore: number;
+  reasoning: string;
+  matchedAspects: string[];
+}
+
+// POST /api/papers/discover/ai-search - AI-powered paper search
+router.post('/discover/ai-search', async (req: Request, res: Response) => {
+  try {
+    const { researchIdea, apiKey, modelId = 'gpt-4o', maxPapers = 10 } = req.body as {
+      researchIdea: string;
+      apiKey: string;
+      modelId?: string;
+      maxPapers?: number;
+    };
+
+    if (!researchIdea || typeof researchIdea !== 'string' || !researchIdea.trim()) {
+      return res.status(400).json({ error: 'Bad Request', message: 'Research idea is required' });
+    }
+
+    if (!apiKey || typeof apiKey !== 'string') {
+      return res.status(400).json({ error: 'Bad Request', message: 'API key is required' });
+    }
+
+    // Check if the model is supported
+    const provider = getProviderForModel(modelId);
+    if (!provider) {
+      return res.status(400).json({ error: 'Bad Request', message: `Unsupported model: ${modelId}` });
+    }
+
+    // Step 1: Use AI to analyze the research idea and generate search queries
+    const queryGenerationPrompt = `You are a research assistant helping find relevant academic papers.
+
+Given this research idea/problem:
+"${researchIdea.trim()}"
+
+Generate 3-5 focused search queries that would help find the most relevant papers on Semantic Scholar.
+Each query should target a different aspect of the research problem:
+1. Core concepts and methodology
+2. Related applications or domains
+3. Key techniques or algorithms
+4. Similar problem formulations
+5. Foundational or seminal work
+
+IMPORTANT: Respond ONLY with valid JSON, no markdown formatting.
+{
+  "analysis": "Brief analysis of the research problem (2-3 sentences)",
+  "keyAspects": ["aspect1", "aspect2", "aspect3"],
+  "searchQueries": [
+    {"query": "search query 1", "rationale": "why this query"},
+    {"query": "search query 2", "rationale": "why this query"},
+    {"query": "search query 3", "rationale": "why this query"}
+  ]
+}`;
+
+    let queryGenerationResponse;
+    try {
+      queryGenerationResponse = await chatCompletion(
+        {
+          model: modelId,
+          messages: [
+            { role: 'system', content: 'You are a research assistant. Output only valid JSON.' },
+            { role: 'user', content: queryGenerationPrompt }
+          ],
+          maxTokens: 1000,
+          temperature: 0.7,
+        },
+        { apiKey }
+      );
+    } catch (error) {
+      if (error instanceof AIProviderError) {
+        return res.status(error.statusCode || 500).json({
+          error: 'AI Error',
+          message: error.message,
+          provider: error.provider,
+        });
+      }
+      throw error;
+    }
+
+    // Parse the query generation response
+    let queryData: {
+      analysis: string;
+      keyAspects: string[];
+      searchQueries: Array<{ query: string; rationale: string }>;
+    };
+
+    try {
+      let jsonStr = queryGenerationResponse.content.trim();
+      if (jsonStr.startsWith('```')) {
+        jsonStr = jsonStr.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
+      }
+      queryData = JSON.parse(jsonStr);
+    } catch (parseError) {
+      console.error('Failed to parse query generation response:', queryGenerationResponse.content);
+      return res.status(500).json({ error: 'Internal Server Error', message: 'Failed to parse AI response for query generation' });
+    }
+
+    // Step 2: Execute searches on Semantic Scholar for each query
+    const allPapers: Map<string, SemanticScholarPaper> = new Map();
+    const papersPerQuery = Math.ceil((maxPapers * 2) / queryData.searchQueries.length); // Get more than needed for filtering
+
+    for (const queryItem of queryData.searchQueries) {
+      try {
+        const searchQuery = encodeURIComponent(queryItem.query);
+        const apiUrl = `https://api.semanticscholar.org/graph/v1/paper/search?query=${searchQuery}&fields=paperId,externalIds,title,authors,abstract,year,citationCount,url,venue,isOpenAccess,openAccessPdf&limit=${papersPerQuery}`;
+
+        const response = await fetch(apiUrl, {
+          headers: { 'Accept': 'application/json' },
+        });
+
+        if (response.ok) {
+          const data = await response.json() as { data: SemanticScholarPaper[] };
+          for (const paper of (data.data || [])) {
+            if (paper.paperId && paper.title && !allPapers.has(paper.paperId)) {
+              allPapers.set(paper.paperId, paper);
+            }
+          }
+        }
+
+        // Small delay to avoid rate limiting
+        await new Promise(resolve => setTimeout(resolve, 200));
+      } catch (e) {
+        console.warn(`Search failed for query "${queryItem.query}":`, e);
+      }
+    }
+
+    if (allPapers.size === 0) {
+      return res.json({
+        papers: [],
+        analysis: queryData.analysis,
+        keyAspects: queryData.keyAspects,
+        searchQueries: queryData.searchQueries,
+        message: 'No papers found. Try adjusting your research idea description.',
+      });
+    }
+
+    // Step 3: Use AI to analyze and rank the papers
+    const papersForAnalysis = Array.from(allPapers.values()).slice(0, 30); // Limit to 30 for AI analysis
+
+    const paperSummaries = papersForAnalysis.map((p, i) => `
+[${i + 1}] "${p.title}"
+Authors: ${(p.authors || []).slice(0, 3).map(a => a.name).join(', ')}${(p.authors || []).length > 3 ? ' et al.' : ''}
+Year: ${p.year || 'Unknown'} | Citations: ${p.citationCount || 0}
+Abstract: ${(p.abstract || 'No abstract available').substring(0, 300)}${(p.abstract || '').length > 300 ? '...' : ''}
+`).join('\n---\n');
+
+    const rankingPrompt = `You are a research assistant helping find the most relevant papers for a research idea.
+
+RESEARCH IDEA:
+"${researchIdea.trim()}"
+
+KEY ASPECTS TO CONSIDER:
+${queryData.keyAspects.map((a, i) => `${i + 1}. ${a}`).join('\n')}
+
+CANDIDATE PAPERS:
+${paperSummaries}
+
+Analyze each paper's relevance to the research idea. Select the TOP ${maxPapers} most relevant papers.
+
+For each selected paper, provide:
+1. A relevance score (1-10, where 10 is highly relevant)
+2. A brief reasoning (1-2 sentences) explaining why this paper is relevant
+3. Which aspects of the research idea it addresses
+
+IMPORTANT: Respond ONLY with valid JSON, no markdown formatting.
+{
+  "curatedPapers": [
+    {
+      "paperIndex": 1,
+      "relevanceScore": 9,
+      "reasoning": "Why this paper is relevant...",
+      "matchedAspects": ["aspect1", "aspect2"]
+    }
+  ]
+}
+
+Only include papers that are truly relevant (score >= 6). Sort by relevance score descending.`;
+
+    let rankingResponse;
+    try {
+      rankingResponse = await chatCompletion(
+        {
+          model: modelId,
+          messages: [
+            { role: 'system', content: 'You are a research assistant. Output only valid JSON.' },
+            { role: 'user', content: rankingPrompt }
+          ],
+          maxTokens: 2000,
+          temperature: 0.5,
+        },
+        { apiKey }
+      );
+    } catch (error) {
+      if (error instanceof AIProviderError) {
+        return res.status(error.statusCode || 500).json({
+          error: 'AI Error',
+          message: error.message,
+          provider: error.provider,
+        });
+      }
+      throw error;
+    }
+
+    // Parse the ranking response
+    let rankingData: {
+      curatedPapers: Array<{
+        paperIndex: number;
+        relevanceScore: number;
+        reasoning: string;
+        matchedAspects: string[];
+      }>;
+    };
+
+    try {
+      let jsonStr = rankingResponse.content.trim();
+      if (jsonStr.startsWith('```')) {
+        jsonStr = jsonStr.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
+      }
+      rankingData = JSON.parse(jsonStr);
+    } catch (parseError) {
+      console.error('Failed to parse ranking response:', rankingResponse.content);
+      return res.status(500).json({ error: 'Internal Server Error', message: 'Failed to parse AI response for paper ranking' });
+    }
+
+    // Step 4: Combine paper data with AI analysis
+    const curatedPapers: AICuratedPaper[] = rankingData.curatedPapers
+      .filter(cp => cp.paperIndex >= 1 && cp.paperIndex <= papersForAnalysis.length)
+      .map(cp => {
+        const paper = papersForAnalysis[cp.paperIndex - 1];
+        return {
+          paper: {
+            semanticScholarId: paper.paperId,
+            arxivId: paper.externalIds?.ArXiv || null,
+            doi: paper.externalIds?.DOI || null,
+            title: paper.title || 'Untitled',
+            authors: (paper.authors || []).map(a => a.name),
+            abstract: paper.abstract || null,
+            year: paper.year || null,
+            citationCount: paper.citationCount || 0,
+            url: paper.url || null,
+            venue: paper.venue || null,
+            isOpenAccess: paper.isOpenAccess || false,
+            pdfUrl: paper.openAccessPdf?.url || (paper.externalIds?.ArXiv ? `https://arxiv.org/pdf/${paper.externalIds.ArXiv}.pdf` : null),
+          },
+          relevanceScore: cp.relevanceScore,
+          reasoning: cp.reasoning,
+          matchedAspects: cp.matchedAspects || [],
+        };
+      })
+      .sort((a, b) => b.relevanceScore - a.relevanceScore)
+      .slice(0, maxPapers);
+
+    // Calculate token usage
+    const totalTokens = (queryGenerationResponse.usage.promptTokens + queryGenerationResponse.usage.completionTokens) +
+                        (rankingResponse.usage.promptTokens + rankingResponse.usage.completionTokens);
+
+    res.json({
+      papers: curatedPapers,
+      analysis: queryData.analysis,
+      keyAspects: queryData.keyAspects,
+      searchQueries: queryData.searchQueries,
+      tokensUsed: totalTokens,
+      papersAnalyzed: papersForAnalysis.length,
+    });
+  } catch (error) {
+    console.error('AI paper search error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to perform AI paper search' });
+  }
+});
+
+// ============================================================================
 // FIGURE/TABLE REGION ENDPOINTS
 // ============================================================================
 
@@ -2126,6 +3252,7 @@ router.get('/:id/regions', (req: Request, res: Response) => {
       label: r.label,
       caption: r.caption,
       boundingRect: JSON.parse(r.bounding_rect),
+      imageData: r.image_data || undefined,
       createdBy: r.created_by,
       createdAt: r.created_at,
       updatedAt: r.updated_at,
@@ -2143,7 +3270,7 @@ router.post('/:id/regions', requireAuth, (req: Request, res: Response) => {
   try {
     const user = (req as any).user;
     const { id: paperId } = req.params;
-    const { pageNumber, type, label, caption, boundingRect } = req.body as CreateFigureTableRegionRequest;
+    const { pageNumber, type, label, caption, boundingRect, imageData } = req.body as CreateFigureTableRegionRequest;
 
     // Check paper exists and user is the uploader
     const paper = db.prepare('SELECT added_by FROM papers WHERE id = ?').get(paperId) as any;
@@ -2167,9 +3294,9 @@ router.post('/:id/regions', requireAuth, (req: Request, res: Response) => {
     const regionId = uuidv4();
 
     db.prepare(`
-      INSERT INTO figure_table_regions (id, paper_id, page_number, type, label, caption, bounding_rect, created_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(regionId, paperId, pageNumber, type, label, caption || null, JSON.stringify(boundingRect), user.id);
+      INSERT INTO figure_table_regions (id, paper_id, page_number, type, label, caption, bounding_rect, image_data, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(regionId, paperId, pageNumber, type, label, caption || null, JSON.stringify(boundingRect), imageData || null, user.id);
 
     const region: FigureTableRegion = {
       id: regionId,
@@ -2179,6 +3306,7 @@ router.post('/:id/regions', requireAuth, (req: Request, res: Response) => {
       label,
       caption,
       boundingRect,
+      imageData,
       createdBy: user.id,
       createdAt: Math.floor(Date.now() / 1000),
       updatedAt: Math.floor(Date.now() / 1000),
@@ -2709,6 +3837,8 @@ import type { AiAgentHistory, AiAgentMessage, CreateAiAgentHistoryRequest, Updat
 
 // Helper to convert db row to AiAgentHistory
 function dbRowToAiAgentHistory(row: any, userName: string): AiAgentHistory {
+  const totalTokens = (row.total_prompt_tokens || 0) + (row.total_completion_tokens || 0);
+  const tokenLimit = row.token_limit ?? 100000;
   return {
     id: row.id,
     paperId: row.paper_id,
@@ -2730,6 +3860,9 @@ function dbRowToAiAgentHistory(row: any, userName: string): AiAgentHistory {
     totalCompletionTokens: row.total_completion_tokens || 0,
     maxContextTokens: row.max_context_tokens || 128000,
     conversationRounds: row.conversation_rounds || 0,
+    // Token spending limit
+    tokenLimit: tokenLimit,
+    tokenLimitReached: tokenLimit > 0 && totalTokens >= tokenLimit,
   };
 }
 
@@ -2809,7 +3942,7 @@ router.post('/:id/agent-history', requireAuth, (req: Request, res: Response) => 
   try {
     const user = (req as any).user;
     const { id: paperId } = req.params;
-    const { title, isPublic, apiKey, maxContextTokens, modelId, customModelName } = req.body as CreateAiAgentHistoryRequest;
+    const { title, isPublic, apiKey, maxContextTokens, modelId, customModelName, tokenLimit } = req.body as CreateAiAgentHistoryRequest;
 
     // Check paper exists
     const paper = db.prepare('SELECT id FROM papers WHERE id = ?').get(paperId);
@@ -2844,6 +3977,7 @@ router.post('/:id/agent-history', requireAuth, (req: Request, res: Response) => 
     const historyId = uuidv4();
     const now = Math.floor(Date.now() / 1000);
     const contextLimit = maxContextTokens || 128000; // Default for gpt-4o
+    const sessionTokenLimit = tokenLimit ?? 100000; // Default 100K tokens spending limit
 
     // Deactivate all other histories for this user on this paper
     db.prepare(`
@@ -2856,9 +3990,9 @@ router.post('/:id/agent-history', requireAuth, (req: Request, res: Response) => 
     const encryptedApiKey = apiKey ? Buffer.from(apiKey).toString('base64') : null;
 
     db.prepare(`
-      INSERT INTO ai_agent_history (id, paper_id, user_id, title, messages, is_public, is_active, model_used, model_id, api_key_encrypted, max_context_tokens, total_prompt_tokens, total_completion_tokens, conversation_rounds, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 0, 0, 0, ?, ?)
-    `).run(historyId, paperId, user.id, title.trim(), '[]', isPublic ? 1 : 0, finalModelName, finalModelId, encryptedApiKey, contextLimit, now, now);
+      INSERT INTO ai_agent_history (id, paper_id, user_id, title, messages, is_public, is_active, model_used, model_id, api_key_encrypted, max_context_tokens, total_prompt_tokens, total_completion_tokens, conversation_rounds, token_limit, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, 0, 0, 0, ?, ?, ?)
+    `).run(historyId, paperId, user.id, title.trim(), '[]', isPublic ? 1 : 0, finalModelName, finalModelId, encryptedApiKey, contextLimit, sessionTokenLimit, now, now);
 
     const history: AiAgentHistory = {
       id: historyId,
@@ -2878,6 +4012,8 @@ router.post('/:id/agent-history', requireAuth, (req: Request, res: Response) => 
       totalCompletionTokens: 0,
       maxContextTokens: contextLimit,
       conversationRounds: 0,
+      tokenLimit: sessionTokenLimit,
+      tokenLimitReached: false,
     };
 
     res.status(201).json({ history });
@@ -2892,7 +4028,7 @@ router.put('/:paperId/agent-history/:historyId', requireAuth, (req: Request, res
   try {
     const user = (req as any).user;
     const { paperId, historyId } = req.params;
-    const { title, isPublic, isActive, messages, sentenceAnalysis, figureTableAnalysis } = req.body as UpdateAiAgentHistoryRequest;
+    const { title, isPublic, isActive, messages, sentenceAnalysis, figureTableAnalysis, tokenLimit } = req.body as UpdateAiAgentHistoryRequest;
 
     // Check history exists and belongs to user
     const existing = db.prepare(`
@@ -2940,6 +4076,13 @@ router.put('/:paperId/agent-history/:historyId', requireAuth, (req: Request, res
       }
       updates.push('is_active = ?');
       params.push(isActive ? 1 : 0);
+    }
+    if (tokenLimit !== undefined) {
+      if (typeof tokenLimit !== 'number' || tokenLimit < 0) {
+        return res.status(400).json({ error: 'Bad Request', message: 'Token limit must be a positive number' });
+      }
+      updates.push('token_limit = ?');
+      params.push(tokenLimit);
     }
 
     if (updates.length === 0) {
@@ -3501,6 +4644,19 @@ router.post('/:paperId/agent-history/:historyId/chat', requireAuth, async (req: 
       return res.status(400).json({ error: 'Bad Request', message: 'Please set an API key first' });
     }
 
+    // Check token limit
+    const totalTokens = (existing.total_prompt_tokens || 0) + (existing.total_completion_tokens || 0);
+    const tokenLimit = existing.token_limit ?? 100000;
+    if (tokenLimit > 0 && totalTokens >= tokenLimit) {
+      return res.status(400).json({
+        error: 'Token Limit Reached',
+        message: `You have reached your token limit of ${tokenLimit.toLocaleString()} tokens. Please increase your limit to continue.`,
+        tokenLimitReached: true,
+        currentTokens: totalTokens,
+        tokenLimit: tokenLimit,
+      });
+    }
+
     // Decrypt the API key
     const apiKey = Buffer.from(existing.api_key_encrypted, 'base64').toString('utf8');
 
@@ -3578,7 +4734,17 @@ ${analysisSummary}
 
 IMPORTANT: You have read this paper. When users ask what paper you read or what it's about, refer to your analysis above. Be helpful, concise, and academic in your responses. You can discuss specific findings, methodology, contributions, and insights from the paper based on your analysis.
 
-When users ask questions about specific sentences or sections, pay careful attention to the context they provide. Always reference the specific sentence and section in your answer.`;
+When users ask questions about specific sentences or sections, pay careful attention to the context they provide. Always reference the specific sentence and section in your answer.
+
+FORMAT YOUR RESPONSES IN MARKDOWN:
+- Use **bold** for emphasis on key terms
+- Use *italics* for paper titles or technical terms
+- Use \`code\` for variable names, function names, or short code snippets
+- Use numbered lists (1. 2. 3.) for sequential steps or ordered items
+- Use bullet points (- or *) for unordered lists
+- Use > for blockquotes when citing from the paper
+- Use LaTeX math notation: $inline math$ for inline equations and $$display math$$ for display equations
+- Use ### for section headers when organizing longer responses`;
 
     // If context is provided (e.g., for @AI questions about specific sentences),
     // prepend it to the user message so the AI has full context
@@ -4115,6 +5281,108 @@ Analyze each item and provide labels with brief comments.`;
 
     const content = aiResponse.content || '{}';
 
+    // Multimodal analysis for figures/tables with images
+    const figureTablesWithImages = (figureTables || []).filter((ft: any) => ft.imageData);
+    let imageAnalysisResults: Record<string, any> = {};
+
+    if (figureTablesWithImages.length > 0) {
+      // Build multimodal prompt for figure/table image analysis
+      const imageAnalysisSystemPrompt = `You are an AI research assistant with expertise in analyzing figures and tables from academic papers.
+For each image, provide a comprehensive analysis including:
+1. Description of what the figure/table shows
+2. Visual type (chart, graph, diagram, photo, illustration, table, flowchart, architecture, equation, or other)
+3. Key findings or observations
+4. Whether the image matches its caption
+5. How it relates to the paper's main claims
+
+Respond with a JSON object where keys are the figure/table labels:
+{
+  "Figure 1": {
+    "label": "Result",
+    "comment": "Brief summary",
+    "flags": { "novelty": true/false, "correctnessIssue": true/false },
+    "imageAnalysis": {
+      "description": "Detailed description of what the figure shows",
+      "visualType": "chart|graph|diagram|photo|illustration|table|flowchart|architecture|equation|other",
+      "keyFindings": ["finding 1", "finding 2"],
+      "dataPoints": ["specific values or measurements if visible"],
+      "methodology": "what experiment or method is depicted (if applicable)",
+      "limitations": "any visible issues or limitations"
+    },
+    "captionVerification": {
+      "matches": true/false,
+      "discrepancies": "any mismatch between image and caption",
+      "suggestedCaption": "improved caption if needed"
+    },
+    "paperRelevance": {
+      "supportsMainClaim": true/false,
+      "connectionToText": "how this figure relates to the paper content",
+      "importance": "critical|supporting|supplementary"
+    }
+  }
+}
+
+Only output valid JSON, no other text.`;
+
+      // Build multimodal content with images
+      const imageContent: any[] = [
+        {
+          type: 'text',
+          text: `Paper: ${paper?.title || 'Unknown'}\nPage ${pageNumber}\n\nAnalyze the following figures/tables:\n${figureTablesWithImages.map((ft: any) => `- ${ft.label}: "${ft.caption || 'No caption'}"`).join('\n')}`
+        }
+      ];
+
+      // Add each image
+      for (const ft of figureTablesWithImages) {
+        imageContent.push({
+          type: 'image_url',
+          image_url: {
+            url: ft.imageData.startsWith('data:') ? ft.imageData : `data:image/png;base64,${ft.imageData}`,
+            detail: 'high'
+          }
+        });
+        imageContent.push({
+          type: 'text',
+          text: `[Above image is ${ft.label}]`
+        });
+      }
+
+      try {
+        const imageAiResponse = await chatCompletion(
+          {
+            model: modelId,
+            messages: [
+              { role: 'system', content: imageAnalysisSystemPrompt },
+              { role: 'user', content: imageContent },
+            ],
+            maxTokens: 4000,
+            temperature: 0.3,
+          },
+          { apiKey }
+        );
+
+        // Parse image analysis response
+        let imageAnalysisContent = imageAiResponse.content || '{}';
+        if (imageAnalysisContent.startsWith('```json')) {
+          imageAnalysisContent = imageAnalysisContent.slice(7);
+        }
+        if (imageAnalysisContent.startsWith('```')) {
+          imageAnalysisContent = imageAnalysisContent.slice(3);
+        }
+        if (imageAnalysisContent.endsWith('```')) {
+          imageAnalysisContent = imageAnalysisContent.slice(0, -3);
+        }
+        imageAnalysisResults = JSON.parse(imageAnalysisContent.trim());
+
+        // Add image analysis tokens to usage
+        aiResponse.usage.promptTokens += imageAiResponse.usage.promptTokens;
+        aiResponse.usage.completionTokens += imageAiResponse.usage.completionTokens;
+      } catch (imageError) {
+        console.error('Image analysis error:', imageError);
+        // Continue without image analysis if it fails
+      }
+    }
+
     // Extract token usage from the provider response
     const promptTokens = aiResponse.usage.promptTokens;
     const completionTokens = aiResponse.usage.completionTokens;
@@ -4146,17 +5414,6 @@ Analyze each item and provide labels with brief comments.`;
       timestamp: msgNow,
     });
 
-    // Update token usage and messages in the session
-    db.prepare(`
-      UPDATE ai_agent_history
-      SET messages = ?,
-          total_prompt_tokens = total_prompt_tokens + ?,
-          total_completion_tokens = total_completion_tokens + ?,
-          conversation_rounds = conversation_rounds + 1,
-          updated_at = ?
-      WHERE id = ?
-    `).run(JSON.stringify(existingMessages), promptTokens, completionTokens, msgNow, historyId);
-
     // Parse the AI response
     let analysis;
     try {
@@ -4175,6 +5432,87 @@ Analyze each item and provide labels with brief comments.`;
       console.error('Failed to parse AI response:', content);
       analysis = { sentences: {}, figureTables: {} };
     }
+
+    // Map index-based analysis results to actual sentence IDs and save incrementally
+    const existingSentenceAnalysis = existing.sentence_analysis ? JSON.parse(existing.sentence_analysis) : {};
+    const existingFigureTableAnalysis = existing.figure_table_analysis ? JSON.parse(existing.figure_table_analysis) : {};
+
+    // Map sentence analysis (AI uses 1-based indices, we have actual IDs from request)
+    if (analysis.sentences) {
+      Object.entries(analysis.sentences).forEach(([indexStr, data]: [string, any]) => {
+        const index = parseInt(indexStr) - 1; // AI uses 1-based indexing
+        if (index >= 0 && index < sentences.length) {
+          const sentenceId = sentences[index].id;
+          existingSentenceAnalysis[sentenceId] = {
+            label: data.label || 'Background',
+            comment: data.comment,
+            flags: data.flags || {},
+          };
+        }
+      });
+    }
+
+    // Map figure/table analysis (AI uses labels)
+    // First, merge text-based analysis
+    if (analysis.figureTables && figureTables) {
+      Object.entries(analysis.figureTables).forEach(([label, data]: [string, any]) => {
+        const ft = figureTables.find((f: any) => f.label === label || f.id === label);
+        if (ft) {
+          existingFigureTableAnalysis[ft.id] = {
+            label: data.label || 'Result',
+            comment: data.comment,
+            flags: data.flags || {},
+          };
+        }
+      });
+    }
+
+    // Then, merge multimodal image analysis results (overwrites/enhances text-based analysis)
+    if (Object.keys(imageAnalysisResults).length > 0 && figureTables) {
+      Object.entries(imageAnalysisResults).forEach(([label, data]: [string, any]) => {
+        const ft = figureTables.find((f: any) => f.label === label || f.id === label);
+        if (ft) {
+          // Merge image analysis with existing analysis
+          existingFigureTableAnalysis[ft.id] = {
+            ...existingFigureTableAnalysis[ft.id],
+            label: data.label || existingFigureTableAnalysis[ft.id]?.label || 'Result',
+            comment: data.comment || existingFigureTableAnalysis[ft.id]?.comment,
+            flags: { ...existingFigureTableAnalysis[ft.id]?.flags, ...data.flags },
+            // Add enhanced multimodal analysis fields
+            imageAnalysis: data.imageAnalysis,
+            captionVerification: data.captionVerification,
+            paperRelevance: data.paperRelevance,
+          };
+        }
+      });
+
+      // Also add image analysis to the main analysis object for response
+      analysis.figureTables = {
+        ...analysis.figureTables,
+        ...imageAnalysisResults,
+      };
+    }
+
+    // Update token usage, messages, and analysis data in the session (incremental save)
+    db.prepare(`
+      UPDATE ai_agent_history
+      SET messages = ?,
+          total_prompt_tokens = total_prompt_tokens + ?,
+          total_completion_tokens = total_completion_tokens + ?,
+          conversation_rounds = conversation_rounds + 1,
+          sentence_analysis = ?,
+          figure_table_analysis = ?,
+          updated_at = ?
+      WHERE id = ?
+    `).run(
+      JSON.stringify(existingMessages),
+      promptTokens,
+      completionTokens,
+      JSON.stringify(existingSentenceAnalysis),
+      JSON.stringify(existingFigureTableAnalysis),
+      msgNow,
+      historyId
+    );
 
     res.json({
       analysis,
@@ -4271,6 +5609,1323 @@ The paper analysis is now complete. You can ask questions about the paper, gener
   } catch (error) {
     console.error('Complete reading error:', error);
     res.status(500).json({ error: 'Internal Server Error', message: 'Failed to complete reading' });
+  }
+});
+
+// ============================================================================
+// READING WORKFLOW ENDPOINTS
+// ============================================================================
+
+// GET /api/papers/reading-workflows - Get user's workflows + public workflows
+router.get('/reading-workflows', requireAuth, (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+
+    // Get user's own workflows and public workflows from other users
+    const workflows = db.prepare(`
+      SELECT * FROM reading_workflows
+      WHERE user_id = ? OR is_public = 1
+      ORDER BY
+        CASE WHEN user_id = ? THEN 0 ELSE 1 END,
+        is_default DESC,
+        updated_at DESC
+    `).all(user.id, user.id) as any[];
+
+    const result = workflows.map(w => ({
+      id: w.id,
+      name: w.name,
+      description: w.description,
+      userId: w.user_id,
+      isPublic: w.is_public === 1,
+      isDefault: w.is_default === 1,
+      createdAt: w.created_at,
+      updatedAt: w.updated_at,
+      ...JSON.parse(w.config_json),
+    }));
+
+    res.json({ workflows: result });
+  } catch (error) {
+    console.error('Get reading workflows error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to get reading workflows' });
+  }
+});
+
+// POST /api/papers/reading-workflows - Create a new reading workflow
+router.post('/reading-workflows', requireAuth, (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    const { name, description, strategy, strategyConfig, levelConfigs, processingOptions, isPublic } = req.body;
+
+    if (!name || !strategy || !levelConfigs) {
+      return res.status(400).json({ error: 'Bad Request', message: 'Missing required fields: name, strategy, levelConfigs' });
+    }
+
+    const id = uuidv4();
+    const now = Math.floor(Date.now() / 1000);
+
+    const configJson = JSON.stringify({
+      strategy,
+      strategyConfig: strategyConfig || {},
+      levelConfigs,
+      processingOptions: processingOptions || {},
+    });
+
+    db.prepare(`
+      INSERT INTO reading_workflows (id, user_id, name, description, config_json, is_public, is_default, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
+    `).run(id, user.id, name, description || '', configJson, isPublic ? 1 : 0, now, now);
+
+    const workflow = {
+      id,
+      name,
+      description: description || '',
+      userId: user.id,
+      isPublic: !!isPublic,
+      isDefault: false,
+      createdAt: now,
+      updatedAt: now,
+      strategy,
+      strategyConfig: strategyConfig || {},
+      levelConfigs,
+      processingOptions: processingOptions || {},
+    };
+
+    res.status(201).json({ workflow });
+  } catch (error) {
+    console.error('Create reading workflow error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to create reading workflow' });
+  }
+});
+
+// PUT /api/papers/reading-workflows/:id - Update a reading workflow
+router.put('/reading-workflows/:id', requireAuth, (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    const { id } = req.params;
+    const { name, description, strategy, strategyConfig, levelConfigs, processingOptions, isPublic } = req.body;
+
+    // Check workflow exists and belongs to user
+    const existing = db.prepare('SELECT * FROM reading_workflows WHERE id = ?').get(id) as any;
+
+    if (!existing) {
+      return res.status(404).json({ error: 'Not Found', message: 'Workflow not found' });
+    }
+
+    if (existing.user_id !== user.id) {
+      return res.status(403).json({ error: 'Forbidden', message: 'You can only update your own workflows' });
+    }
+
+    const existingConfig = JSON.parse(existing.config_json);
+    const now = Math.floor(Date.now() / 1000);
+
+    const updatedConfig = {
+      strategy: strategy ?? existingConfig.strategy,
+      strategyConfig: strategyConfig ?? existingConfig.strategyConfig,
+      levelConfigs: levelConfigs ?? existingConfig.levelConfigs,
+      processingOptions: processingOptions ?? existingConfig.processingOptions,
+    };
+
+    db.prepare(`
+      UPDATE reading_workflows
+      SET name = ?, description = ?, config_json = ?, is_public = ?, updated_at = ?
+      WHERE id = ?
+    `).run(
+      name ?? existing.name,
+      description ?? existing.description,
+      JSON.stringify(updatedConfig),
+      isPublic !== undefined ? (isPublic ? 1 : 0) : existing.is_public,
+      now,
+      id
+    );
+
+    const workflow = {
+      id,
+      name: name ?? existing.name,
+      description: description ?? existing.description,
+      userId: user.id,
+      isPublic: isPublic !== undefined ? !!isPublic : existing.is_public === 1,
+      isDefault: existing.is_default === 1,
+      createdAt: existing.created_at,
+      updatedAt: now,
+      ...updatedConfig,
+    };
+
+    res.json({ workflow });
+  } catch (error) {
+    console.error('Update reading workflow error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to update reading workflow' });
+  }
+});
+
+// DELETE /api/papers/reading-workflows/:id - Delete a reading workflow
+router.delete('/reading-workflows/:id', requireAuth, (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    const { id } = req.params;
+
+    // Check workflow exists and belongs to user
+    const existing = db.prepare('SELECT * FROM reading_workflows WHERE id = ?').get(id) as any;
+
+    if (!existing) {
+      return res.status(404).json({ error: 'Not Found', message: 'Workflow not found' });
+    }
+
+    if (existing.user_id !== user.id) {
+      return res.status(403).json({ error: 'Forbidden', message: 'You can only delete your own workflows' });
+    }
+
+    // Don't allow deleting default workflows
+    if (existing.is_default === 1) {
+      return res.status(400).json({ error: 'Bad Request', message: 'Cannot delete default workflows' });
+    }
+
+    db.prepare('DELETE FROM reading_workflows WHERE id = ?').run(id);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete reading workflow error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to delete reading workflow' });
+  }
+});
+
+// POST /api/papers/:paperId/agent-history/:historyId/analyze-paragraph - Analyze a paragraph
+router.post('/:paperId/agent-history/:historyId/analyze-paragraph', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    const { paperId, historyId } = req.params;
+    const { paragraphId, sentenceIds, content, context, pageNumber, workflowConfig } = req.body;
+
+    if (!paragraphId || !content) {
+      return res.status(400).json({ error: 'Bad Request', message: 'Missing required fields: paragraphId, content' });
+    }
+
+    // Check history exists and belongs to user
+    const history = db.prepare(`
+      SELECT * FROM ai_agent_history WHERE id = ? AND paper_id = ?
+    `).get(historyId, paperId) as any;
+
+    if (!history) {
+      return res.status(404).json({ error: 'Not Found', message: 'History not found' });
+    }
+
+    if (history.user_id !== user.id) {
+      return res.status(403).json({ error: 'Forbidden', message: 'You can only analyze your own sessions' });
+    }
+
+    // Get API key
+    const apiKey = history.api_key_encrypted ? Buffer.from(history.api_key_encrypted, 'base64').toString('utf8') : null;
+    if (!apiKey) {
+      return res.status(400).json({ error: 'Bad Request', message: 'API key not set for this session' });
+    }
+
+    const modelId = history.model_id || 'gpt-4o-mini';
+
+    // Build prompt from workflow config or use default
+    const levelConfig = workflowConfig?.levelConfigs?.paragraph;
+    const systemPrompt = levelConfig?.systemPrompt || `You are a research paper analysis assistant. Analyze the given paragraph and provide structured analysis.`;
+
+    const userPrompt = levelConfig?.userPromptTemplate
+      ? levelConfig.userPromptTemplate
+          .replace('{{content}}', content)
+          .replace('{{context}}', context || '')
+      : `Analyze this paragraph from a research paper:
+
+${content}
+
+${context ? `Context from surrounding text: ${context}` : ''}
+
+Provide analysis in JSON format:
+{
+  "summary": "1-2 sentence summary of the paragraph",
+  "mainPoint": "The main point or argument made",
+  "connectionToPrevious": "How this connects to previous content (if any)",
+  "label": "One of: Introduction, Background, Methodology, Results, Discussion, Conclusion, Related Work",
+  "flags": {
+    "isKeyParagraph": true/false,
+    "containsNovelty": true/false
+  }
+}`;
+
+    const messages = [
+      { role: 'system' as const, content: systemPrompt },
+      { role: 'user' as const, content: userPrompt },
+    ];
+
+    const provider = getProviderForModel(modelId);
+    const result = await chatCompletion(provider, {
+      model: modelId,
+      messages,
+      apiKey,
+      temperature: levelConfig?.temperature ?? 0.3,
+      maxTokens: levelConfig?.maxTokens ?? 1000,
+    });
+
+    // Parse response
+    let analysis;
+    try {
+      let responseContent = result.content;
+      if (responseContent.startsWith('```json')) {
+        responseContent = responseContent.slice(7);
+      }
+      if (responseContent.startsWith('```')) {
+        responseContent = responseContent.slice(3);
+      }
+      if (responseContent.endsWith('```')) {
+        responseContent = responseContent.slice(0, -3);
+      }
+      analysis = JSON.parse(responseContent.trim());
+    } catch {
+      analysis = {
+        summary: result.content,
+        mainPoint: '',
+        label: 'Unknown',
+        flags: {},
+      };
+    }
+
+    // Add metadata
+    const paragraphAnalysis = {
+      id: paragraphId,
+      pageNumber,
+      sentenceIds: sentenceIds || [],
+      ...analysis,
+    };
+
+    // Update history with paragraph analysis
+    const existingParagraphAnalysis = history.paragraph_analysis ? JSON.parse(history.paragraph_analysis) : {};
+    existingParagraphAnalysis[paragraphId] = paragraphAnalysis;
+
+    const promptTokens = result.usage?.promptTokens || 0;
+    const completionTokens = result.usage?.completionTokens || 0;
+
+    db.prepare(`
+      UPDATE ai_agent_history
+      SET paragraph_analysis = ?,
+          tokens_used = tokens_used + ?,
+          updated_at = ?
+      WHERE id = ?
+    `).run(
+      JSON.stringify(existingParagraphAnalysis),
+      promptTokens + completionTokens,
+      Math.floor(Date.now() / 1000),
+      historyId
+    );
+
+    res.json({
+      analysis: paragraphAnalysis,
+      usage: { promptTokens, completionTokens },
+    });
+  } catch (error) {
+    console.error('Analyze paragraph error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to analyze paragraph' });
+  }
+});
+
+// POST /api/papers/:paperId/agent-history/:historyId/analyze-section - Analyze a section
+router.post('/:paperId/agent-history/:historyId/analyze-section', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    const { paperId, historyId } = req.params;
+    const { sectionId, sectionTitle, paragraphIds, content, pageRange, workflowConfig } = req.body;
+
+    if (!sectionId || !content) {
+      return res.status(400).json({ error: 'Bad Request', message: 'Missing required fields: sectionId, content' });
+    }
+
+    // Check history exists and belongs to user
+    const history = db.prepare(`
+      SELECT * FROM ai_agent_history WHERE id = ? AND paper_id = ?
+    `).get(historyId, paperId) as any;
+
+    if (!history) {
+      return res.status(404).json({ error: 'Not Found', message: 'History not found' });
+    }
+
+    if (history.user_id !== user.id) {
+      return res.status(403).json({ error: 'Forbidden', message: 'You can only analyze your own sessions' });
+    }
+
+    // Get API key
+    const apiKey = history.api_key_encrypted ? Buffer.from(history.api_key_encrypted, 'base64').toString('utf8') : null;
+    if (!apiKey) {
+      return res.status(400).json({ error: 'Bad Request', message: 'API key not set for this session' });
+    }
+
+    const modelId = history.model_id || 'gpt-4o-mini';
+
+    // Build prompt from workflow config or use default
+    const levelConfig = workflowConfig?.levelConfigs?.section;
+    const systemPrompt = levelConfig?.systemPrompt || `You are a research paper analysis assistant. Analyze the given section and provide structured analysis.`;
+
+    const userPrompt = levelConfig?.userPromptTemplate
+      ? levelConfig.userPromptTemplate
+          .replace('{{content}}', content)
+          .replace('{{sectionTitle}}', sectionTitle || '')
+      : `Analyze this section from a research paper:
+
+Section: ${sectionTitle || 'Untitled'}
+
+${content}
+
+Provide analysis in JSON format:
+{
+  "summary": "2-3 sentence summary of the section",
+  "keyContributions": ["list", "of", "key", "points"],
+  "relationshipToGoals": "How this section relates to the paper's main goals",
+  "label": "One of: Abstract, Introduction, Background, Methodology, Experiments, Results, Discussion, Conclusion, Related Work, Appendix",
+  "flags": {
+    "isCoreSection": true/false,
+    "containsMainResults": true/false
+  }
+}`;
+
+    const messages = [
+      { role: 'system' as const, content: systemPrompt },
+      { role: 'user' as const, content: userPrompt },
+    ];
+
+    const provider = getProviderForModel(modelId);
+    const result = await chatCompletion(provider, {
+      model: modelId,
+      messages,
+      apiKey,
+      temperature: levelConfig?.temperature ?? 0.3,
+      maxTokens: levelConfig?.maxTokens ?? 1500,
+    });
+
+    // Parse response
+    let analysis;
+    try {
+      let responseContent = result.content;
+      if (responseContent.startsWith('```json')) {
+        responseContent = responseContent.slice(7);
+      }
+      if (responseContent.startsWith('```')) {
+        responseContent = responseContent.slice(3);
+      }
+      if (responseContent.endsWith('```')) {
+        responseContent = responseContent.slice(0, -3);
+      }
+      analysis = JSON.parse(responseContent.trim());
+    } catch {
+      analysis = {
+        summary: result.content,
+        keyContributions: [],
+        relationshipToGoals: '',
+        label: 'Unknown',
+        flags: {},
+      };
+    }
+
+    // Add metadata
+    const sectionAnalysis = {
+      id: sectionId,
+      sectionTitle: sectionTitle || '',
+      pageRange: pageRange || { start: 0, end: 0 },
+      paragraphIds: paragraphIds || [],
+      ...analysis,
+    };
+
+    // Update history with section analysis
+    const existingSectionAnalysis = history.section_analysis ? JSON.parse(history.section_analysis) : {};
+    existingSectionAnalysis[sectionId] = sectionAnalysis;
+
+    const promptTokens = result.usage?.promptTokens || 0;
+    const completionTokens = result.usage?.completionTokens || 0;
+
+    db.prepare(`
+      UPDATE ai_agent_history
+      SET section_analysis = ?,
+          tokens_used = tokens_used + ?,
+          updated_at = ?
+      WHERE id = ?
+    `).run(
+      JSON.stringify(existingSectionAnalysis),
+      promptTokens + completionTokens,
+      Math.floor(Date.now() / 1000),
+      historyId
+    );
+
+    res.json({
+      analysis: sectionAnalysis,
+      usage: { promptTokens, completionTokens },
+    });
+  } catch (error) {
+    console.error('Analyze section error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to analyze section' });
+  }
+});
+
+// POST /api/papers/:paperId/agent-history/:historyId/reflect - Reflect on analysis (for rethink mode)
+router.post('/:paperId/agent-history/:historyId/reflect', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    const { paperId, historyId } = req.params;
+    const { level, analysisContext, reflectionPrompt, workflowConfig } = req.body;
+
+    if (!level || !analysisContext) {
+      return res.status(400).json({ error: 'Bad Request', message: 'Missing required fields: level, analysisContext' });
+    }
+
+    // Check history exists and belongs to user
+    const history = db.prepare(`
+      SELECT * FROM ai_agent_history WHERE id = ? AND paper_id = ?
+    `).get(historyId, paperId) as any;
+
+    if (!history) {
+      return res.status(404).json({ error: 'Not Found', message: 'History not found' });
+    }
+
+    if (history.user_id !== user.id) {
+      return res.status(403).json({ error: 'Forbidden', message: 'You can only reflect on your own sessions' });
+    }
+
+    // Get API key
+    const apiKey = history.api_key_encrypted ? Buffer.from(history.api_key_encrypted, 'base64').toString('utf8') : null;
+    if (!apiKey) {
+      return res.status(400).json({ error: 'Bad Request', message: 'API key not set for this session' });
+    }
+
+    const modelId = history.model_id || 'gpt-4o-mini';
+
+    // Build reflection prompt
+    const defaultReflectionPrompt = `Based on your analysis of the ${level}, reflect on:
+1. What is the most important insight from this ${level}?
+2. How does this connect to the paper's main argument?
+3. Are there any gaps or questions that arise?
+4. What should the reader pay special attention to?
+
+Analysis context:
+${JSON.stringify(analysisContext, null, 2)}
+
+Provide a thoughtful reflection that helps deepen understanding.`;
+
+    const messages = [
+      {
+        role: 'system' as const,
+        content: 'You are a thoughtful research assistant helping readers deeply understand academic papers. Provide insightful reflections that go beyond surface-level analysis.'
+      },
+      {
+        role: 'user' as const,
+        content: reflectionPrompt || workflowConfig?.strategyConfig?.reflectionPrompt || defaultReflectionPrompt
+      },
+    ];
+
+    const provider = getProviderForModel(modelId);
+    const result = await chatCompletion(provider, {
+      model: modelId,
+      messages,
+      apiKey,
+      temperature: 0.7,
+      maxTokens: 800,
+    });
+
+    const promptTokens = result.usage?.promptTokens || 0;
+    const completionTokens = result.usage?.completionTokens || 0;
+
+    // Update token count
+    db.prepare(`
+      UPDATE ai_agent_history
+      SET tokens_used = tokens_used + ?,
+          updated_at = ?
+      WHERE id = ?
+    `).run(promptTokens + completionTokens, Math.floor(Date.now() / 1000), historyId);
+
+    res.json({
+      reflection: result.content,
+      level,
+      usage: { promptTokens, completionTokens },
+    });
+  } catch (error) {
+    console.error('Reflect error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to generate reflection' });
+  }
+});
+
+// POST /api/papers/:paperId/agent-history/:historyId/start-reading - Start reading with workflow config
+router.post('/:paperId/agent-history/:historyId/start-reading', requireAuth, (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    const { paperId, historyId } = req.params;
+    const { workflowId, customWorkflow, questions, startPage, endPage } = req.body;
+
+    // Check history exists and belongs to user
+    const history = db.prepare(`
+      SELECT * FROM ai_agent_history WHERE id = ? AND paper_id = ?
+    `).get(historyId, paperId) as any;
+
+    if (!history) {
+      return res.status(404).json({ error: 'Not Found', message: 'History not found' });
+    }
+
+    if (history.user_id !== user.id) {
+      return res.status(403).json({ error: 'Forbidden', message: 'You can only start reading on your own sessions' });
+    }
+
+    let workflowConfig = customWorkflow;
+
+    // If workflowId provided, fetch that workflow
+    if (workflowId && !customWorkflow) {
+      const workflow = db.prepare(`
+        SELECT * FROM reading_workflows WHERE id = ? AND (user_id = ? OR is_public = 1)
+      `).get(workflowId, user.id) as any;
+
+      if (workflow) {
+        workflowConfig = {
+          id: workflow.id,
+          name: workflow.name,
+          ...JSON.parse(workflow.config_json),
+        };
+      }
+    }
+
+    // Store reading progress info
+    const readingProgress = {
+      startedAt: Math.floor(Date.now() / 1000),
+      startPage: startPage || 1,
+      endPage: endPage || null,
+      currentPage: startPage || 1,
+      questions: questions || [],
+      status: 'in_progress',
+    };
+
+    db.prepare(`
+      UPDATE ai_agent_history
+      SET workflow_config_id = ?,
+          workflow_config_snapshot = ?,
+          reading_progress = ?,
+          updated_at = ?
+      WHERE id = ?
+    `).run(
+      workflowId || null,
+      workflowConfig ? JSON.stringify(workflowConfig) : null,
+      JSON.stringify(readingProgress),
+      Math.floor(Date.now() / 1000),
+      historyId
+    );
+
+    res.json({
+      success: true,
+      workflowConfig,
+      readingProgress,
+    });
+  } catch (error) {
+    console.error('Start reading error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to start reading' });
+  }
+});
+
+// ============================================================================
+// PAPER AVATAR ENDPOINTS (AI-Generated Visual Representations)
+// ============================================================================
+
+// Style templates for avatar generation
+const AVATAR_STYLE_PROMPTS: Record<string, string> = {
+  diagram: `Create a clean, professional scientific diagram showing the paper's main contribution:
+- Use flowchart/architecture style with labeled boxes and arrows
+- Show the key components and their relationships
+- Use a white or light background
+- Professional color scheme (blues, grays, subtle accents)
+- Minimal text, focus on visual representation
+- Clear visual hierarchy showing input → process → output`,
+
+  infographic: `Create a modern infographic-style visualization:
+- Highlight key concepts with icons and visual elements
+- Use a color-coded layout with clear sections
+- Include visual metaphors for abstract concepts
+- Modern, flat design aesthetic
+- Clear visual flow from top to bottom or left to right
+- Engaging but professional appearance`,
+
+  conceptual: `Create an abstract conceptual visualization:
+- Use visual metaphors to represent abstract ideas
+- Artistic but scientifically grounded representation
+- Flowing, connected elements showing relationships
+- Gradient or subtle coloring for depth
+- Minimalist, thought-provoking design
+- Focus on the "big picture" understanding`,
+
+  technical: `Create a detailed technical schematic:
+- Show algorithmic or mathematical structure
+- Include component diagrams with clear labels
+- Use engineering/technical drawing aesthetic
+- Grid or structured layout
+- Precise, detailed representation
+- Focus on technical accuracy and completeness`,
+};
+
+// Helper function to build avatar generation prompt using GPT-4o
+async function buildAvatarPrompt(
+  paper: any,
+  sentenceAnalysis: Record<string, any>,
+  style: string,
+  customPrompt?: string,
+  apiKey?: string
+): Promise<string> {
+  // Extract key insights from sentence analysis
+  const keyPoints: string[] = [];
+  const novelContributions: string[] = [];
+  const methodDetails: string[] = [];
+
+  for (const [, analysis] of Object.entries(sentenceAnalysis)) {
+    const a = analysis as any;
+    if (a.flags?.novelty || a.label === 'main_contribution' || a.label === 'novel') {
+      if (a.comment) novelContributions.push(a.comment);
+    }
+    if (a.label === 'method' || a.label === 'methodology') {
+      if (a.comment) methodDetails.push(a.comment);
+    }
+    if (a.label === 'result' || a.label === 'conclusion') {
+      if (a.comment) keyPoints.push(a.comment);
+    }
+  }
+
+  const stylePrompt = AVATAR_STYLE_PROMPTS[style] || AVATAR_STYLE_PROMPTS.diagram;
+
+  // If we have an API key, use GPT to craft an optimal prompt
+  if (apiKey) {
+    try {
+      const systemPrompt = `You are an expert at creating prompts for DALL-E 3 to generate scientific diagrams.
+Your task is to create a detailed, specific image generation prompt based on an academic paper.
+
+The prompt should:
+1. Focus on visualizing the main contribution/methodology
+2. Specify concrete visual elements (shapes, arrows, labels)
+3. Request a clean, professional aesthetic suitable for academic use
+4. Avoid requesting text-heavy designs (AI can't render text well)
+5. Use visual metaphors that even non-experts can understand
+6. Be specific about colors, layout, and style
+
+Output ONLY the prompt text, nothing else.`;
+
+      const userMessage = `Paper Title: "${paper.title}"
+
+Abstract: ${paper.abstract || 'Not available'}
+
+${novelContributions.length > 0 ? `Novel Contributions:\n${novelContributions.slice(0, 3).join('\n')}\n` : ''}
+${methodDetails.length > 0 ? `Methodology:\n${methodDetails.slice(0, 3).join('\n')}\n` : ''}
+${keyPoints.length > 0 ? `Key Results:\n${keyPoints.slice(0, 3).join('\n')}\n` : ''}
+
+Requested Style: ${style}
+Style Guidelines: ${stylePrompt}
+
+${customPrompt ? `Additional User Guidance: ${customPrompt}` : ''}
+
+Create an optimal DALL-E 3 prompt for generating a visual representation of this paper.`;
+
+      const response = await chatCompletion(
+        {
+          model: 'gpt-4o',
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userMessage },
+          ],
+          maxTokens: 500,
+          temperature: 0.7,
+        },
+        { apiKey }
+      );
+
+      return response.content;
+    } catch (error) {
+      console.error('Error generating prompt with GPT:', error);
+      // Fall through to manual prompt generation
+    }
+  }
+
+  // Fallback: Build prompt manually
+  let prompt = `Scientific ${style} visualization of: "${paper.title}". `;
+  prompt += stylePrompt + ' ';
+
+  if (novelContributions.length > 0) {
+    prompt += `Key innovation: ${novelContributions[0]}. `;
+  }
+  if (methodDetails.length > 0) {
+    prompt += `Method: ${methodDetails[0]}. `;
+  }
+  if (customPrompt) {
+    prompt += customPrompt + ' ';
+  }
+
+  prompt += 'Academic paper quality, clean professional design.';
+
+  return prompt;
+}
+
+// Helper function to generate image using DALL-E 3
+async function generateDallE3Image(
+  prompt: string,
+  apiKey: string
+): Promise<{ imageData: string; revisedPrompt: string }> {
+  // Truncate prompt if too long (DALL-E 3 has a 4000 character limit)
+  const truncatedPrompt = prompt.length > 3500
+    ? prompt.substring(0, 3500) + '...'
+    : prompt;
+
+  const fullPrompt = `Scientific diagram for academic paper: ${truncatedPrompt}. Style: Clean, professional, minimal text labels, clear visual hierarchy.`;
+
+  console.log('DALL-E prompt length:', fullPrompt.length);
+
+  const response = await fetch('https://api.openai.com/v1/images/generations', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: 'dall-e-3',
+      prompt: fullPrompt,
+      n: 1,
+      size: '1024x1024',
+      quality: 'standard',
+      response_format: 'b64_json',
+    }),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    console.error('DALL-E API error response:', JSON.stringify(errorData, null, 2));
+    const errorMessage = errorData.error?.message || `DALL-E API error: ${response.status}`;
+    throw new Error(errorMessage);
+  }
+
+  const data = await response.json();
+
+  if (!data.data || !data.data[0] || !data.data[0].b64_json) {
+    console.error('Unexpected DALL-E response:', JSON.stringify(data, null, 2));
+    throw new Error('Invalid response from DALL-E API');
+  }
+
+  const imageData = `data:image/png;base64,${data.data[0].b64_json}`;
+  const revisedPrompt = data.data[0].revised_prompt || prompt;
+
+  return { imageData, revisedPrompt };
+}
+
+// POST /api/papers/:paperId/avatar/generate - Generate a new paper avatar
+router.post('/:paperId/avatar/generate', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { paperId } = req.params;
+    const { sessionId, style = 'diagram', customPrompt } = req.body;
+    const user = (req as any).user;
+
+    // Validate style
+    const validStyles = ['diagram', 'infographic', 'conceptual', 'technical'];
+    if (!validStyles.includes(style)) {
+      return res.status(400).json({ error: 'Bad Request', message: 'Invalid style. Must be one of: diagram, infographic, conceptual, technical' });
+    }
+
+    // Validate paper exists
+    const paper = db.prepare('SELECT * FROM papers WHERE id = ?').get(paperId) as any;
+    if (!paper) {
+      return res.status(404).json({ error: 'Not Found', message: 'Paper not found' });
+    }
+
+    // Validate AI session exists and belongs to user
+    console.log('Looking for session:', sessionId, 'for paper:', paperId);
+
+    const session = db.prepare(`
+      SELECT h.*, u.display_name as user_name
+      FROM ai_agent_history h
+      JOIN users u ON h.user_id = u.id
+      WHERE h.id = ? AND h.paper_id = ?
+    `).get(sessionId, paperId) as any;
+
+    if (!session) {
+      // Debug: check if session exists at all
+      const anySession = db.prepare('SELECT id, paper_id, user_id FROM ai_agent_history WHERE id = ?').get(sessionId) as any;
+      console.log('Session lookup failed. Session exists?', anySession ? `Yes, but for paper ${anySession.paper_id}` : 'No');
+      return res.status(404).json({ error: 'Not Found', message: 'AI session not found' });
+    }
+
+    console.log('Session found:', session.id, 'user:', session.user_id);
+
+    if (session.user_id !== user.id) {
+      return res.status(403).json({ error: 'Forbidden', message: 'You can only use your own AI sessions' });
+    }
+
+    if (!session.api_key_encrypted) {
+      return res.status(400).json({ error: 'Bad Request', message: 'AI session does not have an API key configured' });
+    }
+
+    // Require sentence analysis for better prompt generation
+    const sentenceAnalysis = session.sentence_analysis ? JSON.parse(session.sentence_analysis) : {};
+    if (Object.keys(sentenceAnalysis).length === 0) {
+      return res.status(400).json({
+        error: 'Bad Request',
+        message: 'Please complete "Let Agent Read" first for better avatar generation',
+      });
+    }
+
+    // Decrypt API key
+    const apiKey = Buffer.from(session.api_key_encrypted, 'base64').toString('utf8');
+
+    // Build the generation prompt
+    const prompt = await buildAvatarPrompt(paper, sentenceAnalysis, style, customPrompt, apiKey);
+
+    // Generate image using DALL-E 3
+    const { imageData, revisedPrompt } = await generateDallE3Image(prompt, apiKey);
+
+    // Store the avatar
+    const avatarId = uuidv4();
+    const now = Math.floor(Date.now() / 1000);
+    const isUploader = paper.added_by === user.id;
+
+    db.prepare(`
+      INSERT INTO paper_avatars (id, paper_id, user_id, image_data, prompt, generation_model, style, is_active, session_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(avatarId, paperId, user.id, imageData, revisedPrompt, 'dall-e-3', style, isUploader ? 1 : 0, sessionId, now);
+
+    // If user is uploader, set this as the active avatar
+    if (isUploader) {
+      // Deactivate other avatars for this paper
+      db.prepare('UPDATE paper_avatars SET is_active = 0 WHERE paper_id = ? AND id != ?').run(paperId, avatarId);
+      // Update the cache on papers table
+      db.prepare('UPDATE papers SET active_avatar_url = ? WHERE id = ?').run(imageData, paperId);
+    }
+
+    // Get user info for response
+    const userData = db.prepare('SELECT display_name, avatar FROM users WHERE id = ?').get(user.id) as any;
+
+    const avatar = {
+      id: avatarId,
+      paperId,
+      userId: user.id,
+      userName: userData?.display_name,
+      userAvatar: userData?.avatar,
+      imageData,
+      prompt: revisedPrompt,
+      generationModel: 'dall-e-3',
+      style,
+      isActive: isUploader,
+      sessionId,
+      createdAt: now,
+    };
+
+    res.json({ avatar });
+  } catch (error: any) {
+    console.error('Generate paper avatar error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: error.message || 'Failed to generate paper avatar' });
+  }
+});
+
+// GET /api/papers/:paperId/avatars - List all avatars for a paper
+router.get('/:paperId/avatars', (req: Request, res: Response) => {
+  try {
+    const { paperId } = req.params;
+
+    // Validate paper exists
+    const paper = db.prepare('SELECT id FROM papers WHERE id = ?').get(paperId);
+    if (!paper) {
+      return res.status(404).json({ error: 'Not Found', message: 'Paper not found' });
+    }
+
+    const avatars = db.prepare(`
+      SELECT pa.*, u.display_name as user_name, u.avatar as user_avatar
+      FROM paper_avatars pa
+      JOIN users u ON pa.user_id = u.id
+      WHERE pa.paper_id = ?
+      ORDER BY pa.is_active DESC, pa.created_at DESC
+    `).all(paperId) as any[];
+
+    const formattedAvatars = avatars.map(a => ({
+      id: a.id,
+      paperId: a.paper_id,
+      userId: a.user_id,
+      userName: a.user_name,
+      userAvatar: a.user_avatar,
+      imageData: a.image_data,
+      prompt: a.prompt,
+      generationModel: a.generation_model,
+      style: a.style,
+      isActive: !!a.is_active,
+      sessionId: a.session_id,
+      createdAt: a.created_at,
+    }));
+
+    res.json({ avatars: formattedAvatars });
+  } catch (error) {
+    console.error('List paper avatars error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to list paper avatars' });
+  }
+});
+
+// PUT /api/papers/:paperId/avatar/:avatarId/activate - Set an avatar as active (uploader only)
+router.put('/:paperId/avatar/:avatarId/activate', requireAuth, (req: Request, res: Response) => {
+  try {
+    const { paperId, avatarId } = req.params;
+    const user = (req as any).user;
+
+    // Validate paper exists and user is uploader
+    const paper = db.prepare('SELECT added_by FROM papers WHERE id = ?').get(paperId) as any;
+    if (!paper) {
+      return res.status(404).json({ error: 'Not Found', message: 'Paper not found' });
+    }
+
+    if (paper.added_by !== user.id) {
+      return res.status(403).json({ error: 'Forbidden', message: 'Only the paper uploader can change the active avatar' });
+    }
+
+    // Validate avatar exists
+    const avatar = db.prepare('SELECT * FROM paper_avatars WHERE id = ? AND paper_id = ?').get(avatarId, paperId) as any;
+    if (!avatar) {
+      return res.status(404).json({ error: 'Not Found', message: 'Avatar not found' });
+    }
+
+    // Deactivate all avatars for this paper
+    db.prepare('UPDATE paper_avatars SET is_active = 0 WHERE paper_id = ?').run(paperId);
+
+    // Activate the selected avatar
+    db.prepare('UPDATE paper_avatars SET is_active = 1 WHERE id = ?').run(avatarId);
+
+    // Update the cache on papers table
+    db.prepare('UPDATE papers SET active_avatar_url = ? WHERE id = ?').run(avatar.image_data, paperId);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Activate paper avatar error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to activate paper avatar' });
+  }
+});
+
+// DELETE /api/papers/:paperId/avatar/:avatarId - Delete an avatar (creator or uploader)
+router.delete('/:paperId/avatar/:avatarId', requireAuth, (req: Request, res: Response) => {
+  try {
+    const { paperId, avatarId } = req.params;
+    const user = (req as any).user;
+
+    // Validate paper exists
+    const paper = db.prepare('SELECT added_by FROM papers WHERE id = ?').get(paperId) as any;
+    if (!paper) {
+      return res.status(404).json({ error: 'Not Found', message: 'Paper not found' });
+    }
+
+    // Validate avatar exists
+    const avatar = db.prepare('SELECT * FROM paper_avatars WHERE id = ? AND paper_id = ?').get(avatarId, paperId) as any;
+    if (!avatar) {
+      return res.status(404).json({ error: 'Not Found', message: 'Avatar not found' });
+    }
+
+    // Only avatar creator or paper uploader can delete
+    if (avatar.user_id !== user.id && paper.added_by !== user.id) {
+      return res.status(403).json({ error: 'Forbidden', message: 'You can only delete your own avatars or avatars on papers you uploaded' });
+    }
+
+    const wasActive = avatar.is_active;
+
+    // Delete the avatar
+    db.prepare('DELETE FROM paper_avatars WHERE id = ?').run(avatarId);
+
+    // If it was active, set another avatar as active or clear the cache
+    if (wasActive) {
+      const nextAvatar = db.prepare(`
+        SELECT * FROM paper_avatars WHERE paper_id = ? ORDER BY created_at DESC LIMIT 1
+      `).get(paperId) as any;
+
+      if (nextAvatar) {
+        db.prepare('UPDATE paper_avatars SET is_active = 1 WHERE id = ?').run(nextAvatar.id);
+        db.prepare('UPDATE papers SET active_avatar_url = ? WHERE id = ?').run(nextAvatar.image_data, paperId);
+      } else {
+        db.prepare('UPDATE papers SET active_avatar_url = NULL WHERE id = ?').run(paperId);
+      }
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete paper avatar error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to delete paper avatar' });
+  }
+});
+
+// ============================================================================
+// PAPER PRIVACY & COLLABORATION ENDPOINTS
+// ============================================================================
+
+// PUT /api/papers/:paperId/visibility - Update paper visibility
+router.put('/:paperId/visibility', requireAuth, (req: Request, res: Response) => {
+  try {
+    const { paperId } = req.params;
+    const { visibility } = req.body;
+    const user = (req as any).user;
+
+    if (!canModifyPaper(paperId, user.id)) {
+      return res.status(403).json({ error: 'Forbidden', message: 'Only the paper owner can change visibility' });
+    }
+
+    if (!visibility || !['public', 'private'].includes(visibility)) {
+      return res.status(400).json({ error: 'Bad Request', message: 'visibility must be "public" or "private"' });
+    }
+
+    db.prepare('UPDATE papers SET visibility = ? WHERE id = ?').run(visibility, paperId);
+
+    res.json({ success: true, visibility });
+  } catch (error) {
+    console.error('Update paper visibility error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to update paper visibility' });
+  }
+});
+
+// GET /api/papers/:paperId/collaborators - List paper collaborators
+router.get('/:paperId/collaborators', requireAuth, (req: Request, res: Response) => {
+  try {
+    const { paperId } = req.params;
+    const user = (req as any).user;
+
+    // Only owner and collaborators can see the list
+    if (!hasAccessToPaper(paperId, user.id)) {
+      return res.status(403).json({ error: 'Forbidden', message: 'You do not have access to this paper' });
+    }
+
+    const collaborators = db.prepare(`
+      SELECT pc.*, u.display_name as user_name, u.avatar as user_avatar,
+             iu.display_name as invited_by_name
+      FROM paper_collaborators pc
+      JOIN users u ON pc.user_id = u.id
+      JOIN users iu ON pc.invited_by = iu.id
+      WHERE pc.paper_id = ?
+      ORDER BY pc.invited_at DESC
+    `).all(paperId) as any[];
+
+    res.json({
+      collaborators: collaborators.map(c => ({
+        id: c.id,
+        paperId: c.paper_id,
+        userId: c.user_id,
+        userName: c.user_name,
+        userAvatar: c.user_avatar,
+        role: c.role,
+        invitedBy: c.invited_by,
+        invitedByName: c.invited_by_name,
+        invitedAt: c.invited_at,
+      }))
+    });
+  } catch (error) {
+    console.error('List collaborators error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to list collaborators' });
+  }
+});
+
+// POST /api/papers/:paperId/collaborators - Add a collaborator
+router.post('/:paperId/collaborators', requireAuth, (req: Request, res: Response) => {
+  try {
+    const { paperId } = req.params;
+    const { username, role = 'viewer' } = req.body;
+    const user = (req as any).user;
+
+    if (!canModifyPaper(paperId, user.id)) {
+      return res.status(403).json({ error: 'Forbidden', message: 'Only the paper owner can add collaborators' });
+    }
+
+    if (!username || typeof username !== 'string') {
+      return res.status(400).json({ error: 'Bad Request', message: 'username is required' });
+    }
+
+    if (!['viewer', 'commenter', 'editor'].includes(role)) {
+      return res.status(400).json({ error: 'Bad Request', message: 'role must be "viewer", "commenter", or "editor"' });
+    }
+
+    // Find user by username
+    const targetUser = db.prepare('SELECT id, display_name, avatar FROM users WHERE username = ?').get(username) as any;
+    if (!targetUser) {
+      return res.status(404).json({ error: 'Not Found', message: 'User not found' });
+    }
+
+    // Can't add yourself
+    if (targetUser.id === user.id) {
+      return res.status(400).json({ error: 'Bad Request', message: 'You cannot add yourself as a collaborator' });
+    }
+
+    // Check if already a collaborator
+    const existing = db.prepare(
+      'SELECT 1 FROM paper_collaborators WHERE paper_id = ? AND user_id = ?'
+    ).get(paperId, targetUser.id);
+
+    if (existing) {
+      return res.status(409).json({ error: 'Conflict', message: 'User is already a collaborator' });
+    }
+
+    const id = crypto.randomUUID();
+    db.prepare(`
+      INSERT INTO paper_collaborators (id, paper_id, user_id, role, invited_by)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(id, paperId, targetUser.id, role, user.id);
+
+    res.status(201).json({
+      collaborator: {
+        id,
+        paperId,
+        userId: targetUser.id,
+        userName: targetUser.display_name,
+        userAvatar: targetUser.avatar,
+        role,
+        invitedBy: user.id,
+        invitedByName: user.displayName,
+        invitedAt: Math.floor(Date.now() / 1000),
+      }
+    });
+  } catch (error) {
+    console.error('Add collaborator error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to add collaborator' });
+  }
+});
+
+// PUT /api/papers/:paperId/collaborators/:collaboratorId - Update collaborator role
+router.put('/:paperId/collaborators/:collaboratorId', requireAuth, (req: Request, res: Response) => {
+  try {
+    const { paperId, collaboratorId } = req.params;
+    const { role } = req.body;
+    const user = (req as any).user;
+
+    if (!canModifyPaper(paperId, user.id)) {
+      return res.status(403).json({ error: 'Forbidden', message: 'Only the paper owner can update collaborators' });
+    }
+
+    if (!role || !['viewer', 'commenter', 'editor'].includes(role)) {
+      return res.status(400).json({ error: 'Bad Request', message: 'role must be "viewer", "commenter", or "editor"' });
+    }
+
+    const result = db.prepare(
+      'UPDATE paper_collaborators SET role = ? WHERE id = ? AND paper_id = ?'
+    ).run(role, collaboratorId, paperId);
+
+    if (result.changes === 0) {
+      return res.status(404).json({ error: 'Not Found', message: 'Collaborator not found' });
+    }
+
+    res.json({ success: true, role });
+  } catch (error) {
+    console.error('Update collaborator error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to update collaborator' });
+  }
+});
+
+// DELETE /api/papers/:paperId/collaborators/:collaboratorId - Remove a collaborator
+router.delete('/:paperId/collaborators/:collaboratorId', requireAuth, (req: Request, res: Response) => {
+  try {
+    const { paperId, collaboratorId } = req.params;
+    const user = (req as any).user;
+
+    // Check if user is owner or the collaborator themselves
+    const collaborator = db.prepare(
+      'SELECT user_id FROM paper_collaborators WHERE id = ? AND paper_id = ?'
+    ).get(collaboratorId, paperId) as any;
+
+    if (!collaborator) {
+      return res.status(404).json({ error: 'Not Found', message: 'Collaborator not found' });
+    }
+
+    const isOwner = canModifyPaper(paperId, user.id);
+    const isSelf = collaborator.user_id === user.id;
+
+    if (!isOwner && !isSelf) {
+      return res.status(403).json({ error: 'Forbidden', message: 'Only the paper owner or the collaborator themselves can remove' });
+    }
+
+    db.prepare('DELETE FROM paper_collaborators WHERE id = ?').run(collaboratorId);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Remove collaborator error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to remove collaborator' });
+  }
+});
+
+// POST /api/papers/:paperId/fork - Fork a paper to create a private copy
+router.post('/:paperId/fork', requireAuth, (req: Request, res: Response) => {
+  try {
+    const { paperId } = req.params;
+    const { visibility = 'private' } = req.body;
+    const user = (req as any).user;
+
+    // Get original paper
+    const originalPaper = db.prepare('SELECT * FROM papers WHERE id = ?').get(paperId) as any;
+    if (!originalPaper) {
+      return res.status(404).json({ error: 'Not Found', message: 'Paper not found' });
+    }
+
+    // Check if user has access to the original paper
+    if (originalPaper.visibility === 'private' && !hasAccessToPaper(paperId, user.id)) {
+      return res.status(403).json({ error: 'Forbidden', message: 'You do not have access to this paper' });
+    }
+
+    // Create forked paper
+    const newPaperId = crypto.randomUUID();
+    const forkedTitle = `${originalPaper.title} (Fork)`;
+
+    db.prepare(`
+      INSERT INTO papers (id, arxiv_id, content_hash, title, authors, abstract, added_by, tags, visibility, forked_from_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      newPaperId,
+      originalPaper.arxiv_id,
+      originalPaper.content_hash,
+      forkedTitle,
+      originalPaper.authors,
+      originalPaper.abstract,
+      user.id,
+      originalPaper.tags,
+      visibility,
+      paperId
+    );
+
+    // Increment fork count on original paper
+    db.prepare('UPDATE papers SET fork_count = fork_count + 1 WHERE id = ?').run(paperId);
+
+    // Copy figure/table regions (user can modify their own copy)
+    const regions = db.prepare('SELECT * FROM figure_table_regions WHERE paper_id = ?').all(paperId) as any[];
+    for (const region of regions) {
+      db.prepare(`
+        INSERT INTO figure_table_regions (id, paper_id, page_number, type, label, caption, bounding_rect, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        crypto.randomUUID(),
+        newPaperId,
+        region.page_number,
+        region.type,
+        region.label,
+        region.caption,
+        region.bounding_rect,
+        user.id
+      );
+    }
+
+    const forkedPaper = getPaperWithStats(newPaperId, user.id);
+    res.status(201).json({ paper: forkedPaper });
+  } catch (error) {
+    console.error('Fork paper error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to fork paper' });
+  }
+});
+
+// GET /api/papers/:paperId/forks - List forks of a paper
+router.get('/:paperId/forks', (req: Request, res: Response) => {
+  try {
+    const { paperId } = req.params;
+    const user = (req as any).user;
+
+    // Only show public forks (and user's own private forks)
+    const forks = db.prepare(`
+      SELECT p.*, u.display_name as uploader_name, u.username as uploader_username
+      FROM papers p
+      LEFT JOIN users u ON p.added_by = u.id
+      WHERE p.forked_from_id = ?
+        AND (p.visibility = 'public' OR p.added_by = ?)
+      ORDER BY p.created_at DESC
+    `).all(paperId, user?.id || '') as any[];
+
+    res.json({
+      forks: forks.map(p => ({
+        id: p.id,
+        title: p.title,
+        visibility: p.visibility || 'public',
+        uploaderName: p.uploader_name,
+        uploaderUsername: p.uploader_username,
+        createdAt: p.created_at,
+      }))
+    });
+  } catch (error) {
+    console.error('List forks error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to list forks' });
   }
 });
 

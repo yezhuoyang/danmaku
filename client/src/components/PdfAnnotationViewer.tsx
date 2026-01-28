@@ -32,6 +32,10 @@ import {
   MousePointer2,
   Rows3,
   GalleryHorizontal,
+  Settings2,
+  BookOpen,
+  PanelLeftClose,
+  PanelLeftOpen,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -54,13 +58,15 @@ import {
   FigureTableDiscussionPanel,
 } from "./annotations";
 import { Sentence, SentenceAnnotation, SentenceAnnotationReply, FigureTableAnnotation } from "./annotations/types";
-import { AICompanionPanel } from "./ai";
+import { AICompanionPanel, AISummarySidebar } from "./ai";
 import { AIDebugPanel, AIDebugEntry, AIDebugStats, createEmptyStats } from "./ai/AIDebugPanel";
+import { ReadingWorkflowDialog } from "./ai/reading-workflow";
+import type { ReadingWorkflowConfig } from "../../../shared/types";
 import { PaperContent } from "@/lib/ai-service";
 import { segmentSentences } from "@/lib/sentence-segmenter";
 import { SentenceIndex } from "@/lib/sentence-index";
 import { FigureTable } from "@/lib/figure-table-detector";
-import type { FigureTableRegion, AiAgentHistory, AiSentenceAnalysisData, AiFigureTableAnalysisData } from "../../../shared/types";
+import type { FigureTableRegion, AiAgentHistory, AiSentenceAnalysisData, AiFigureTableAnalysisData, BackgroundReadingJob } from "../../../shared/types";
 import { detectSections, findSectionForPosition, Section } from "@/lib/section-detector";
 import {
   aiDocumentAnnotator,
@@ -90,7 +96,7 @@ interface PdfAnnotationViewerProps {
   // Figure/Table region props
   figureTableRegions?: FigureTableRegion[]; // User-defined regions from API
   isUploader?: boolean; // Whether current user is the paper uploader
-  onRegionCreated?: (region: { pageNumber: number; type: 'figure' | 'table'; label: string; caption?: string; boundingRect: { x: number; y: number; width: number; height: number } }) => void;
+  onRegionCreated?: (region: { pageNumber: number; type: 'figure' | 'table'; label: string; caption?: string; boundingRect: { x: number; y: number; width: number; height: number }; imageData?: string }) => void;
   onRegionUpdated?: (regionId: string, updates: { label?: string; caption?: string; boundingRect?: { x: number; y: number; width: number; height: number } }) => void;
   onRegionDeleted?: (regionId: string) => void;
   // AI Agent session props
@@ -100,6 +106,11 @@ interface PdfAnnotationViewerProps {
     figureTableAnalysis: Record<string, AiFigureTableAnalysisData>
   ) => void; // Called when AI analysis is complete
   onSessionUpdated?: (session: AiAgentHistory) => void; // Called when session is updated (e.g., after reading completes)
+  // Background reading job props
+  backgroundJob?: BackgroundReadingJob | null; // Active background reading job for this paper
+  // Navigation props (for jumping to specific regions from external links)
+  initialPage?: number; // Initial page to scroll to on load
+  highlightRegionId?: string; // Region ID to highlight and scroll to
 }
 
 // Text item with coordinates extracted from PDF
@@ -278,6 +289,8 @@ interface VerticalPageWrapperProps {
   isDrawing?: boolean;
   drawingPageNum?: number | null;
   drawingRect?: { x: number; y: number; width: number; height: number } | null;
+  // Navigation highlight
+  highlightedRegionId?: string | null;
 }
 
 const VerticalPageWrapper = memo(function VerticalPageWrapper({
@@ -324,6 +337,8 @@ const VerticalPageWrapper = memo(function VerticalPageWrapper({
   isDrawing,
   drawingPageNum,
   drawingRect,
+  // Navigation highlight
+  highlightedRegionId,
 }: VerticalPageWrapperProps) {
   const pageRef = useRef<HTMLDivElement>(null);
 
@@ -416,6 +431,7 @@ const VerticalPageWrapper = memo(function VerticalPageWrapper({
               figureTables={pageFigureTables}
               hoveredId={hoveredFigureTableId}
               selectedId={selectedFigureTableId}
+              highlightedId={highlightedRegionId}
               scale={scale}
               onHover={onFigureTableHover}
               onClick={onFigureTableClick}
@@ -480,6 +496,7 @@ const VerticalPageWrapper = memo(function VerticalPageWrapper({
             figureTables={pageFigureTables}
             hoveredId={hoveredFigureTableId}
             selectedId={selectedFigureTableId}
+            highlightedId={highlightedRegionId}
             scale={scale}
             onHover={onFigureTableHover}
             onClick={onFigureTableClick}
@@ -550,6 +567,9 @@ export function PdfAnnotationViewer({
   activeSession,
   onAiAnalysisSaved,
   onSessionUpdated,
+  backgroundJob,
+  initialPage,
+  highlightRegionId,
 }: PdfAnnotationViewerProps) {
   // PDF state
   const [numPages, setNumPages] = useState<number>(0);
@@ -562,7 +582,7 @@ export function PdfAnnotationViewer({
   const pdfDocRef = useRef<any>(null);
 
   // View mode state: 'horizontal' (single page) or 'vertical' (continuous scroll)
-  const [viewMode, setViewMode] = useState<'horizontal' | 'vertical'>('horizontal');
+  const [viewMode, setViewMode] = useState<'horizontal' | 'vertical'>('vertical');
   // Ref for scroll container in vertical mode
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   // Refs for each page in vertical mode to track visibility
@@ -622,6 +642,7 @@ export function PdfAnnotationViewer({
 
   // AI Panel state
   const [showAIPanel, setShowAIPanel] = useState(false);
+  const [showSummarySidebar, setShowSummarySidebar] = useState(false);
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
 
   // Fullscreen state
@@ -663,6 +684,12 @@ export function PdfAnnotationViewer({
   // AI Document Analysis state (for "Let Agent Read" feature)
   const [isAgentReading, setIsAgentReading] = useState(false);
   const [agentHasRead, setAgentHasRead] = useState(false); // Track if agent has read entire paper
+  const [pagesAnalyzedCount, setPagesAnalyzedCount] = useState(0); // Track number of pages with analysis
+
+  // Reading Workflow state
+  const [showWorkflowDialog, setShowWorkflowDialog] = useState(false);
+  const [selectedWorkflow, setSelectedWorkflow] = useState<ReadingWorkflowConfig | null>(null);
+  const [readingQuestions, setReadingQuestions] = useState<string[]>([]);
 
   // AI Follow-up prompt template (user can customize this)
   const [aiFollowUpPromptTemplate, setAiFollowUpPromptTemplate] = useState<string>(
@@ -672,13 +699,20 @@ export function PdfAnnotationViewer({
 
 Please answer the user's question about this sentence in the context of the paper.
 Be concise but thorough (2-4 sentences typically).
-If you don't know or the question is outside the paper's scope, say so honestly.`
+If you don't know or the question is outside the paper's scope, say so honestly.
+
+FORMAT YOUR RESPONSE IN MARKDOWN:
+- Use **bold** for key terms and emphasis
+- Use *italics* for technical terms or paper titles
+- Use \`code\` for variable names or code snippets
+- Use LaTeX math: $inline$ for inline equations, $$display$$ for display equations
+- Use bullet points or numbered lists when appropriate`
   );
   const [aiAnalysisProgress, setAiAnalysisProgress] = useState<{ current: number; total: number } | null>(null);
   const [aiError, setAiError] = useState<string | null>(null); // Error message for AI analysis
   // Store AI analysis results per sentence/figure-table (keyed by ID)
-  const [aiSentenceAnalysis, setAiSentenceAnalysis] = useState<Map<string, { label: string; comment?: string; flags?: { correctnessIssue?: boolean; novelty?: boolean; consistencyIssue?: boolean } }>>(new Map());
-  const [aiFigureTableAnalysis, setAiFigureTableAnalysis] = useState<Map<string, { label: string; comment?: string; flags?: { correctnessIssue?: boolean; novelty?: boolean; consistencyIssue?: boolean } }>>(new Map());
+  const [aiSentenceAnalysis, setAiSentenceAnalysis] = useState<Map<string, AiSentenceAnalysisData>>(new Map());
+  const [aiFigureTableAnalysis, setAiFigureTableAnalysis] = useState<Map<string, AiFigureTableAnalysisData>>(new Map());
 
   // AI Debug state
   const [showDebugPanel, setShowDebugPanel] = useState(false);
@@ -694,12 +728,30 @@ If you don't know or the question is outside the paper's scope, say so honestly.
       // If the session has AI analysis data, load it
       if (activeSession.sentenceAnalysis) {
         const sentenceMap = new Map<string, { label: string; comment?: string; flags?: { correctnessIssue?: boolean; novelty?: boolean; consistencyIssue?: boolean } }>();
+        const analyzedPages = new Set<number>();
+
         Object.entries(activeSession.sentenceAnalysis).forEach(([id, data]) => {
           sentenceMap.set(id, data);
+          // Extract page number from sentence ID (format: s-PAGE-INDEX)
+          const match = id.match(/^s-(\d+)-/);
+          if (match) {
+            analyzedPages.add(parseInt(match[1]));
+          }
         });
+
         setAiSentenceAnalysis(sentenceMap);
-        setAgentHasRead(true);
-        console.log(`Loaded ${sentenceMap.size} sentence analyses from session`);
+        setPagesAnalyzedCount(analyzedPages.size);
+
+        // Only mark as fully read if all pages are analyzed (check against numPages if available)
+        // If numPages is 0 (not loaded yet), we'll update this when document loads
+        if (numPages > 0 && analyzedPages.size >= numPages) {
+          setAgentHasRead(true);
+        } else if (analyzedPages.size > 0) {
+          // Partial progress - don't mark as fully read
+          setAgentHasRead(false);
+        }
+
+        console.log(`Loaded ${sentenceMap.size} sentence analyses from session (${analyzedPages.size} pages)`);
       }
 
       if (activeSession.figureTableAnalysis) {
@@ -715,8 +767,9 @@ If you don't know or the question is outside the paper's scope, say so honestly.
       setAiSentenceAnalysis(new Map());
       setAiFigureTableAnalysis(new Map());
       setAgentHasRead(false);
+      setPagesAnalyzedCount(0);
     }
-  }, [activeSession]);
+  }, [activeSession, numPages]);
 
   // Selection state for drawing
   const [isDrawing, setIsDrawing] = useState(false);
@@ -819,6 +872,28 @@ If you don't know or the question is outside the paper's scope, say so honestly.
       container.removeEventListener('click', handleLinkClick, true);
     };
   }, [pageNumber, numPages]);
+
+  // State to track highlighted region
+  const [highlightedRegion, setHighlightedRegion] = useState<string | null>(null);
+
+  // Handle initial page navigation and region highlighting from URL params
+  useEffect(() => {
+    if (!pdfLoading && numPages > 0) {
+      // Navigate to initial page if specified (scroll is handled by the vertical mode init effect)
+      if (initialPage && initialPage >= 1 && initialPage <= numPages) {
+        setPageNumber(initialPage);
+      }
+
+      // Set region to highlight
+      if (highlightRegionId) {
+        setHighlightedRegion(highlightRegionId);
+        // Clear highlight after 3 seconds
+        setTimeout(() => {
+          setHighlightedRegion(null);
+        }, 3000);
+      }
+    }
+  }, [pdfLoading, numPages, initialPage, highlightRegionId]);
 
   // Extract text from the current page for AI analysis - with coordinates
   useEffect(() => {
@@ -1253,24 +1328,27 @@ If you don't know or the question is outside the paper's scope, say so honestly.
 
   // Initialize rendered pages and scroll when switching to vertical mode
   useEffect(() => {
-    if (viewMode === 'vertical') {
-      // Initialize rendered pages around current page (wider range for smooth initial experience)
+    if (viewMode === 'vertical' && numPages > 0) {
+      // Use initialPage if available, otherwise use current pageNumber
+      const targetPage = (initialPage && initialPage >= 1 && initialPage <= numPages) ? initialPage : pageNumber;
+
+      // Initialize rendered pages around target page (wider range for smooth initial experience)
       const initialRendered = new Set<number>();
-      for (let i = Math.max(1, pageNumber - 3); i <= Math.min(numPages, pageNumber + 5); i++) {
+      for (let i = Math.max(1, targetPage - 3); i <= Math.min(numPages, targetPage + 5); i++) {
         initialRendered.add(i);
       }
       setRenderedPages(initialRendered);
 
-      // Small delay to ensure pages are rendered, then scroll to current page
+      // Delay to ensure pages are rendered before scrolling to target page
       const timer = setTimeout(() => {
-        const element = pageRefs.current.get(pageNumber);
+        const element = pageRefs.current.get(targetPage);
         if (element && scrollContainerRef.current) {
           element.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
-      }, 100);
+      }, 300);
       return () => clearTimeout(timer);
     }
-  }, [viewMode, numPages]); // Only trigger when viewMode changes, not pageNumber
+  }, [viewMode, numPages, initialPage]); // Include initialPage in dependencies
 
   const changeScale = useCallback((delta: number) => {
     setScale((prevScale) => Math.max(0.5, Math.min(prevScale + delta, 1.5)));
@@ -1304,6 +1382,69 @@ If you don't know or the question is outside the paper's scope, say so honestly.
       height: page.originalHeight,
     }));
   }, []);
+
+  // Capture a region from the PDF canvas as a base64 image
+  const captureRegionImage = useCallback((
+    pageNum: number,
+    boundingRect: { x: number; y: number; width: number; height: number }
+  ): string | undefined => {
+    try {
+      // Find the canvas element for the page
+      // In vertical mode, pages are wrapped in divs stored in pageRefs
+      // In horizontal mode, we use containerRef
+      let canvas: HTMLCanvasElement | null = null;
+
+      if (viewMode === 'vertical') {
+        const pageElement = pageRefs.current.get(pageNum);
+        if (pageElement) {
+          canvas = pageElement.querySelector('canvas');
+        }
+      } else {
+        // Horizontal mode - find the canvas in the container
+        if (containerRef.current) {
+          canvas = containerRef.current.querySelector('canvas');
+        }
+      }
+
+      if (!canvas) {
+        console.warn('Canvas not found for page', pageNum);
+        return undefined;
+      }
+
+      // The boundingRect coordinates are in unscaled PDF units
+      // The canvas is rendered at (scale * devicePixelRatio) by react-pdf
+      // We need to account for both to get correct canvas pixel coordinates
+      const dpr = window.devicePixelRatio || 1;
+      const canvasScale = scale * dpr;
+
+      // Calculate pixel coordinates on the canvas
+      const x = Math.floor(boundingRect.x * canvasScale);
+      const y = Math.floor(boundingRect.y * canvasScale);
+      const width = Math.ceil(boundingRect.width * canvasScale);
+      const height = Math.ceil(boundingRect.height * canvasScale);
+
+      // Create a temporary canvas to extract the region
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = width;
+      tempCanvas.height = height;
+      const ctx = tempCanvas.getContext('2d');
+
+      if (!ctx) {
+        console.warn('Could not get 2d context');
+        return undefined;
+      }
+
+      // Draw the region from the PDF canvas
+      ctx.drawImage(canvas, x, y, width, height, 0, 0, width, height);
+
+      // Convert to base64 (use JPEG for smaller file size)
+      const imageData = tempCanvas.toDataURL('image/jpeg', 0.85);
+      return imageData;
+    } catch (error) {
+      console.error('Failed to capture region image:', error);
+      return undefined;
+    }
+  }, [scale, viewMode]);
 
   // Handle mouse events for drawing selection (region mode or figure-table mode)
   const handleMouseDown = useCallback(
@@ -2106,30 +2247,65 @@ If you don't know or the question is outside the paper's scope, say so honestly.
       return;
     }
 
-    // Don't re-read if already done
+    // Don't re-read if already fully done
     if (agentHasRead) {
       return;
     }
 
     setIsAgentReading(true);
-    setAiAnalysisProgress({ current: 0, total: numPages });
+
+    // Determine which pages have already been analyzed (from existing analysis)
+    const analyzedPages = new Set<number>();
+    aiSentenceAnalysis.forEach((_, id) => {
+      const match = id.match(/^s-(\d+)-/);
+      if (match) {
+        analyzedPages.add(parseInt(match[1]));
+      }
+    });
+
+    // Calculate remaining pages to analyze
+    const remainingPages = numPages - analyzedPages.size;
+    setAiAnalysisProgress({ current: analyzedPages.size, total: numPages });
+
+    if (remainingPages === 0) {
+      // All pages already analyzed
+      setAgentHasRead(true);
+      setIsAgentReading(false);
+      console.log('All pages already analyzed');
+      return;
+    }
+
+    console.log(`Continuing reading: ${analyzedPages.size} pages already done, ${remainingPages} remaining`);
 
     // Load PDF once at the start
     const loadingTask = pdfjs.getDocument(pdfUrl);
     const pdf = await loadingTask.promise;
 
-    let pagesAnalyzed = 0;
+    let pagesAnalyzed = analyzedPages.size;
     let totalErrors = 0;
     let totalPromptTokens = 0;
     let totalCompletionTokens = 0;
     let totalDuration = 0;
     const startTime = Date.now();
 
-    // Collect all analysis results for final save
+    // Collect all analysis results for final save (start with existing analysis)
     const allSentenceAnalysis: Record<string, AiSentenceAnalysisData> = {};
     const allFigureTableAnalysis: Record<string, AiFigureTableAnalysisData> = {};
 
+    // Copy existing analysis to all analysis objects
+    aiSentenceAnalysis.forEach((data, id) => {
+      allSentenceAnalysis[id] = data;
+    });
+    aiFigureTableAnalysis.forEach((data, id) => {
+      allFigureTableAnalysis[id] = data;
+    });
+
     for (let page = 1; page <= numPages; page++) {
+      // Skip pages that have already been analyzed
+      if (analyzedPages.has(page)) {
+        continue;
+      }
+
       // Check if reading was aborted
       if (abortReadingRef.current) {
         console.log('AI reading aborted by user');
@@ -2218,12 +2394,23 @@ If you don't know or the question is outside the paper's scope, say so honestly.
           section: s.section,
         }));
 
-        const figureTablesForApi = pageFigureTables.map(ft => ({
-          id: ft.id,
-          type: ft.type,
-          label: ft.label,
-          caption: ft.caption,
-        }));
+        // Capture images for figures/tables to enable multimodal AI analysis
+        const figureTablesForApi = pageFigureTables.map(ft => {
+          // Try to capture the figure/table image from the PDF canvas
+          let imageData: string | undefined;
+          try {
+            imageData = captureRegionImage(page, ft.boundingRect);
+          } catch (e) {
+            console.warn(`Failed to capture image for ${ft.label}:`, e);
+          }
+          return {
+            id: ft.id,
+            type: ft.type,
+            label: ft.label,
+            caption: ft.caption,
+            imageData, // Include base64 image for multimodal analysis
+          };
+        });
 
         // Call server-side API (uses session's encrypted API key)
         const response = await api.analyzePageWithSession(paperId, activeSession.id, {
@@ -2403,7 +2590,7 @@ If you don't know or the question is outside the paper's scope, say so honestly.
         }
       }
     }
-  }, [pdfUrl, paperId, numPages, agentHasRead, activeSession, onAiAnalysisSaved, onSessionUpdated, figureTableRegions]);
+  }, [pdfUrl, paperId, numPages, agentHasRead, activeSession, onAiAnalysisSaved, onSessionUpdated, figureTableRegions, aiSentenceAnalysis, aiFigureTableAnalysis]);
 
   // Get selected figure/table object with AI analysis data
   const selectedFigureTable = useMemo(() => {
@@ -2458,6 +2645,12 @@ If you don't know or the question is outside the paper's scope, say so honestly.
     }
     return userAnnotations;
   }, [selectedFigureTableId, figureTableAnnotations, aiFigureTableAnalysis]);
+
+  // Get the full AI analysis data for the selected figure/table (for enhanced display)
+  const selectedFigureTableAiAnalysis = useMemo(() => {
+    if (!selectedFigureTableId) return null;
+    return aiFigureTableAnalysis.get(selectedFigureTableId) || null;
+  }, [selectedFigureTableId, aiFigureTableAnalysis]);
 
   // Prepare paper content for AI
   const paperContent: PaperContent = {
@@ -2531,9 +2724,38 @@ If you don't know or the question is outside the paper's scope, say so honestly.
             >
               <ChevronLeft className="w-4 h-4" />
             </Button>
-            <span className="text-sm text-white min-w-[100px] text-center font-mono">
-              Page {pageNumber} / {numPages || "..."}
-            </span>
+            {/* Page navigation input */}
+            <div className="flex items-center gap-1">
+              <Input
+                type="number"
+                min={1}
+                max={numPages || 1}
+                value={pageNumber}
+                onChange={(e) => {
+                  const value = parseInt(e.target.value, 10);
+                  if (!isNaN(value) && value >= 1 && value <= numPages) {
+                    setPageNumber(value);
+                    // In vertical mode, scroll to the page
+                    if (viewMode === 'vertical' && scrollContainerRef.current) {
+                      const pageElements = scrollContainerRef.current.querySelectorAll('[data-page-number]');
+                      const targetPage = Array.from(pageElements).find(
+                        (el) => el.getAttribute('data-page-number') === String(value)
+                      );
+                      if (targetPage) {
+                        targetPage.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                      }
+                    }
+                  }
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.currentTarget.blur();
+                  }
+                }}
+                className="w-14 h-7 text-center text-sm bg-slate-700 border-slate-600 text-white [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+              />
+              <span className="text-sm text-white">/ {numPages || "..."}</span>
+            </div>
             <Button
               variant="ghost"
               size="sm"
@@ -2673,7 +2895,7 @@ If you don't know or the question is outside the paper's scope, say so honestly.
             {/* Let Agent Read Button */}
             <div className="w-px h-6 bg-slate-600 mx-2" />
             {isAgentReading ? (
-              /* Stop button when reading */
+              /* Stop button when foreground reading */
               <Button
                 variant="default"
                 size="sm"
@@ -2686,6 +2908,27 @@ If you don't know or the question is outside the paper's scope, say so honestly.
                   Stop ({aiAnalysisProgress?.current || 0}/{aiAnalysisProgress?.total || numPages})
                 </span>
               </Button>
+            ) : backgroundJob && (backgroundJob.status === 'running' || backgroundJob.status === 'pending') ? (
+              /* Background reading in progress indicator */
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-blue-900/50 border border-blue-700/50">
+                <Loader2 className="w-4 h-4 text-blue-400 animate-spin" />
+                <div className="flex flex-col">
+                  <span className="text-xs font-medium text-blue-300">
+                    Background Reading
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <div className="w-16 h-1.5 bg-slate-700 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-blue-500 transition-all"
+                        style={{ width: `${backgroundJob.progress.percentComplete}%` }}
+                      />
+                    </div>
+                    <span className="text-[10px] text-blue-400/70">
+                      {backgroundJob.progress.currentPage}/{backgroundJob.progress.totalPages}
+                    </span>
+                  </div>
+                </div>
+              </div>
             ) : agentHasRead ? (
               /* Re-run button after reading is complete */
               <Button
@@ -2699,18 +2942,41 @@ If you don't know or the question is outside the paper's scope, say so honestly.
                 <span className="text-xs font-medium">Re-run</span>
               </Button>
             ) : (
-              /* Start reading button */
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleLetAgentRead}
-                disabled={numPages === 0}
-                className="h-8 px-3 gap-1.5 text-white hover:bg-slate-700"
-                title="Let AI agent read and analyze the entire paper sentence by sentence"
-              >
-                <Sparkles className="w-4 h-4" />
-                <span className="text-xs font-medium">Let Agent Read</span>
-              </Button>
+              /* Start/Continue reading button with workflow config */
+              <div className="flex items-center">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={handleLetAgentRead}
+                  disabled={numPages === 0}
+                  className={`h-8 px-3 gap-1.5 text-white hover:bg-slate-700 rounded-r-none ${
+                    pagesAnalyzedCount > 0 ? 'bg-blue-600/30' : ''
+                  }`}
+                  title={pagesAnalyzedCount > 0
+                    ? `Continue reading (${pagesAnalyzedCount}/${numPages} pages done)`
+                    : "Let AI agent read and analyze the entire paper sentence by sentence"
+                  }
+                >
+                  <Sparkles className="w-4 h-4" />
+                  <span className="text-xs font-medium">
+                    {pagesAnalyzedCount > 0 ? (
+                      <>Continue ({pagesAnalyzedCount}/{numPages})</>
+                    ) : (
+                      <>Let Agent Read</>
+                    )}
+                  </span>
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setShowWorkflowDialog(true)}
+                  disabled={numPages === 0}
+                  className="h-8 px-1.5 text-white hover:bg-slate-700 rounded-l-none border-l border-slate-600"
+                  title="Configure reading workflow"
+                >
+                  <Settings2 className="w-4 h-4" />
+                </Button>
+              </div>
             )}
 
             {/* Debug Panel Toggle */}
@@ -2727,6 +2993,29 @@ If you don't know or the question is outside the paper's scope, say so honestly.
             >
               <Bug className="w-4 h-4" />
             </Button>
+
+            {/* AI Summary Sidebar Toggle - show when there's any analysis */}
+            {(agentHasRead || pagesAnalyzedCount > 0) && (
+              <Button
+                variant={showSummarySidebar ? "default" : "ghost"}
+                size="sm"
+                onClick={() => setShowSummarySidebar(!showSummarySidebar)}
+                className={`h-8 px-3 gap-1.5 ${
+                  showSummarySidebar
+                    ? 'bg-purple-600 hover:bg-purple-700 text-white'
+                    : 'text-white hover:bg-slate-700'
+                }`}
+                title={showSummarySidebar ? "Hide reading summary" : "Show AI reading summary"}
+              >
+                <BookOpen className="w-4 h-4" />
+                <span className="text-xs font-medium hidden sm:inline">Summary</span>
+                {showSummarySidebar ? (
+                  <PanelLeftClose className="w-4 h-4" />
+                ) : (
+                  <PanelLeftOpen className="w-4 h-4" />
+                )}
+              </Button>
+            )}
 
             {/* AI Panel Toggle */}
             <div className="w-px h-6 bg-slate-600 mx-2" />
@@ -2765,11 +3054,41 @@ If you don't know or the question is outside the paper's scope, say so honestly.
         </div>
 
         {/* PDF Content with Annotations */}
-        <div
-          ref={scrollContainerRef}
-          className="flex-1 overflow-auto bg-slate-900 flex justify-center p-4"
-          onScroll={viewMode === 'vertical' ? handleVerticalScroll : undefined}
-        >
+        <div className="flex-1 relative overflow-hidden">
+          {/* AI Summary Sidebar (overlay) - show when there's any analysis */}
+          {(agentHasRead || pagesAnalyzedCount > 0) && (
+            <AISummarySidebar
+              isOpen={showSummarySidebar}
+              onToggle={() => setShowSummarySidebar(!showSummarySidebar)}
+              sentences={sentences}
+              aiAnalysis={aiSentenceAnalysis}
+              currentPage={pageNumber}
+              totalPages={numPages}
+              onGoToPage={(page) => {
+                setPageNumber(page);
+                // In vertical mode, scroll to the page
+                if (viewMode === 'vertical' && scrollContainerRef.current) {
+                  const pageElements = scrollContainerRef.current.querySelectorAll('[data-page-number]');
+                  const targetPage = Array.from(pageElements).find(
+                    (el) => el.getAttribute('data-page-number') === String(page)
+                  );
+                  if (targetPage) {
+                    targetPage.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  }
+                }
+              }}
+              onSelectSentence={(sentenceId) => {
+                setSelectedSentenceId(sentenceId);
+                setShowDiscussionPanel(true);
+              }}
+              position="left"
+            />
+          )}
+          <div
+            ref={scrollContainerRef}
+            className="h-full overflow-auto bg-slate-900 flex justify-center p-4"
+            onScroll={viewMode === 'vertical' ? handleVerticalScroll : undefined}
+          >
           {pdfLoading && (
             <div className="flex items-center justify-center h-full">
               <div className="text-white/50 flex flex-col items-center gap-3">
@@ -2887,6 +3206,8 @@ If you don't know or the question is outside the paper's scope, say so honestly.
                     isDrawing={isDrawing}
                     drawingPageNum={drawingPageNum}
                     drawingRect={drawingRect}
+                    // Navigation highlight
+                    highlightedRegionId={highlightedRegion}
                   />
                 ))}
               </Document>
@@ -2920,6 +3241,7 @@ If you don't know or the question is outside the paper's scope, say so honestly.
                     figureTables={figureTables}
                     hoveredId={hoveredFigureTableId}
                     selectedId={selectedFigureTableId}
+                    highlightedId={highlightedRegion}
                     scale={scale}
                     onHover={setHoveredFigureTableId}
                     onClick={handleFigureTableClick}
@@ -2978,6 +3300,7 @@ If you don't know or the question is outside the paper's scope, say so honestly.
                 </svg>
               )}
             </div>
+          </div>
           </div>
         </div>
 
@@ -3080,6 +3403,7 @@ If you don't know or the question is outside the paper's scope, say so honestly.
       <FigureTableDiscussionPanel
         figureTable={selectedFigureTable}
         annotations={selectedFigureTableAnnotations}
+        aiAnalysis={selectedFigureTableAiAnalysis}
         onAddAnnotation={handleAddFigureTableAnnotation}
         onAddReply={handleAddFigureTableReply}
         onDeleteAnnotation={handleDeleteFigureTableAnnotation}
@@ -3177,9 +3501,17 @@ If you don't know or the question is outside the paper's scope, say so honestly.
               <Button
                 onClick={() => {
                   if (pendingRegion.label.trim()) {
+                    // Capture the image from the PDF canvas
+                    const regionPageNum = pendingRegion.pageNumber ?? pageNumber;
+                    const imageData = captureRegionImage(regionPageNum, {
+                      x: pendingRegion.x,
+                      y: pendingRegion.y,
+                      width: pendingRegion.width,
+                      height: pendingRegion.height,
+                    });
+
                     onRegionCreated?.({
-                      // Use the stored page number if available (vertical mode), otherwise use current page (horizontal mode)
-                      pageNumber: pendingRegion.pageNumber ?? pageNumber,
+                      pageNumber: regionPageNum,
                       type: pendingRegion.type,
                       label: pendingRegion.label.trim(),
                       caption: pendingRegion.caption.trim() || undefined,
@@ -3189,6 +3521,7 @@ If you don't know or the question is outside the paper's scope, say so honestly.
                         width: pendingRegion.width,
                         height: pendingRegion.height,
                       },
+                      imageData,
                     });
                     setPendingRegion(null);
                   }
@@ -3211,8 +3544,23 @@ If you don't know or the question is outside the paper's scope, say so honestly.
           isReading={isAgentReading}
           progress={aiAnalysisProgress}
           onClose={() => setShowDebugPanel(false)}
+          backgroundJob={backgroundJob}
         />
       )}
+
+      {/* Reading Workflow Configuration Dialog */}
+      <ReadingWorkflowDialog
+        open={showWorkflowDialog}
+        onOpenChange={setShowWorkflowDialog}
+        onSelectWorkflow={(workflow) => setSelectedWorkflow(workflow)}
+        onStartReading={(workflow, questions) => {
+          setSelectedWorkflow(workflow);
+          setReadingQuestions(questions || []);
+          setShowWorkflowDialog(false);
+          // Start reading with the selected workflow
+          handleLetAgentRead();
+        }}
+      />
     </div>
   );
 }

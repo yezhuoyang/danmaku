@@ -110,23 +110,54 @@ export class GoogleProvider implements AIProvider {
 
   private formatMessages(messages: AIMessage[]): {
     systemInstruction: string | null;
-    contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }>;
+    contents: Array<{ role: 'user' | 'model'; parts: Array<{ text?: string; inline_data?: { mime_type: string; data: string } }> }>;
   } {
     let systemInstruction: string | null = null;
-    const contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
+    const contents: Array<{ role: 'user' | 'model'; parts: Array<{ text?: string; inline_data?: { mime_type: string; data: string } }> }> = [];
 
     for (const msg of messages) {
       if (msg.role === 'system') {
-        // Combine multiple system messages
+        // Combine multiple system messages (system must be string for Google)
+        const textContent = typeof msg.content === 'string'
+          ? msg.content
+          : msg.content.filter(c => c.type === 'text').map(c => c.text).join('\n');
         systemInstruction = systemInstruction
-          ? `${systemInstruction}\n\n${msg.content}`
-          : msg.content;
+          ? `${systemInstruction}\n\n${textContent}`
+          : textContent;
       } else {
         // Google uses 'model' instead of 'assistant'
-        contents.push({
-          role: msg.role === 'assistant' ? 'model' : 'user',
-          parts: [{ text: msg.content }],
-        });
+        if (typeof msg.content === 'string') {
+          contents.push({
+            role: msg.role === 'assistant' ? 'model' : 'user',
+            parts: [{ text: msg.content }],
+          });
+        } else {
+          // Convert OpenAI-style multimodal content to Google format
+          const parts = msg.content.map(part => {
+            if (part.type === 'text') {
+              return { text: part.text };
+            } else if (part.type === 'image_url') {
+              // Extract base64 data from data URI
+              const url = part.image_url.url;
+              const matches = url.match(/^data:([^;]+);base64,(.+)$/);
+              if (matches) {
+                return {
+                  inline_data: {
+                    mime_type: matches[1],
+                    data: matches[2],
+                  },
+                };
+              }
+              // If it's a URL, we can't easily convert to Google format
+              return { text: `[Image: ${url}]` };
+            }
+            return { text: JSON.stringify(part) };
+          });
+          contents.push({
+            role: msg.role === 'assistant' ? 'model' : 'user',
+            parts,
+          });
+        }
       }
     }
 

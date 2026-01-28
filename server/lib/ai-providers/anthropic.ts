@@ -112,20 +112,54 @@ export class AnthropicProvider implements AIProvider {
 
   private formatMessages(messages: AIMessage[]): {
     systemPrompt: string | null;
-    conversationMessages: Array<{ role: 'user' | 'assistant'; content: string }>;
+    conversationMessages: Array<{ role: 'user' | 'assistant'; content: string | any[] }>;
   } {
     let systemPrompt: string | null = null;
-    const conversationMessages: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+    const conversationMessages: Array<{ role: 'user' | 'assistant'; content: string | any[] }> = [];
 
     for (const msg of messages) {
       if (msg.role === 'system') {
-        // Combine multiple system messages if present
-        systemPrompt = systemPrompt ? `${systemPrompt}\n\n${msg.content}` : msg.content;
+        // Combine multiple system messages if present (system must be string for Anthropic)
+        const textContent = typeof msg.content === 'string'
+          ? msg.content
+          : msg.content.filter(c => c.type === 'text').map(c => c.text).join('\n');
+        systemPrompt = systemPrompt ? `${systemPrompt}\n\n${textContent}` : textContent;
       } else {
-        conversationMessages.push({
-          role: msg.role as 'user' | 'assistant',
-          content: msg.content,
-        });
+        // For user/assistant messages, handle both string and multimodal array content
+        if (typeof msg.content === 'string') {
+          conversationMessages.push({
+            role: msg.role as 'user' | 'assistant',
+            content: msg.content,
+          });
+        } else {
+          // Convert OpenAI-style multimodal content to Anthropic format
+          const anthropicContent = msg.content.map(part => {
+            if (part.type === 'text') {
+              return { type: 'text', text: part.text };
+            } else if (part.type === 'image_url') {
+              // Extract base64 data from data URI
+              const url = part.image_url.url;
+              const matches = url.match(/^data:([^;]+);base64,(.+)$/);
+              if (matches) {
+                return {
+                  type: 'image',
+                  source: {
+                    type: 'base64',
+                    media_type: matches[1],
+                    data: matches[2],
+                  },
+                };
+              }
+              // If it's a URL, we can't easily convert to Anthropic format
+              return { type: 'text', text: `[Image: ${url}]` };
+            }
+            return part;
+          });
+          conversationMessages.push({
+            role: msg.role as 'user' | 'assistant',
+            content: anthropicContent,
+          });
+        }
       }
     }
 
