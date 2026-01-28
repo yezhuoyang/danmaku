@@ -23,6 +23,18 @@ import type {
   QuizQuestionResponse,
   SubmitQuizAnswerResponse,
   QuizResultsResponse,
+  PaperAvatar,
+  GeneratePaperAvatarRequest,
+  GeneratePaperAvatarResponse,
+  PaperVisibility,
+  PaperCollaborator,
+  PaperCollaboratorRole,
+  PaperGroup,
+  PaperGroupMember,
+  PaperGroupWithPapers,
+  GroupAiSession,
+  CreatePaperGroupRequest,
+  StartGroupReadingRequest,
 } from '../../../shared/types';
 
 const API_BASE = '/api';
@@ -714,6 +726,141 @@ export async function completeReading(
   });
 }
 
+// ============================================================================
+// READING WORKFLOW API
+// ============================================================================
+
+import type {
+  ReadingWorkflowConfig,
+  CreateReadingWorkflowRequest,
+  UpdateReadingWorkflowRequest,
+  ReadingWorkflowListResponse,
+  StartReadingRequest,
+  AiParagraphAnalysisData,
+  AiSectionAnalysisData,
+} from '@shared/types';
+
+// Get all reading workflows (user's own + public)
+export async function getReadingWorkflows(): Promise<ReadingWorkflowListResponse> {
+  return request<ReadingWorkflowListResponse>('/papers/reading-workflows');
+}
+
+// Create a new reading workflow
+export async function createReadingWorkflow(
+  data: CreateReadingWorkflowRequest
+): Promise<{ workflow: ReadingWorkflowConfig }> {
+  return request<{ workflow: ReadingWorkflowConfig }>('/papers/reading-workflows', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+// Update a reading workflow
+export async function updateReadingWorkflow(
+  workflowId: string,
+  data: UpdateReadingWorkflowRequest
+): Promise<{ workflow: ReadingWorkflowConfig }> {
+  return request<{ workflow: ReadingWorkflowConfig }>(`/papers/reading-workflows/${workflowId}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+}
+
+// Delete a reading workflow
+export async function deleteReadingWorkflow(workflowId: string): Promise<{ success: boolean }> {
+  return request<{ success: boolean }>(`/papers/reading-workflows/${workflowId}`, {
+    method: 'DELETE',
+  });
+}
+
+// Start reading with a specific workflow
+export async function startReading(
+  paperId: string,
+  sessionId: string,
+  data: StartReadingRequest
+): Promise<{
+  success: boolean;
+  workflowConfig?: ReadingWorkflowConfig;
+  readingProgress?: {
+    startedAt: number;
+    startPage: number;
+    endPage?: number;
+    currentPage: number;
+    questions: string[];
+    status: string;
+  };
+}> {
+  return request(`/papers/${paperId}/agent-history/${sessionId}/start-reading`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+// Analyze a paragraph
+export async function analyzeParagraph(
+  paperId: string,
+  sessionId: string,
+  data: {
+    paragraphId: string;
+    sentenceIds?: string[];
+    content: string;
+    context?: string;
+    pageNumber: number;
+    workflowConfig?: ReadingWorkflowConfig;
+  }
+): Promise<{
+  analysis: AiParagraphAnalysisData;
+  usage: { promptTokens: number; completionTokens: number };
+}> {
+  return request(`/papers/${paperId}/agent-history/${sessionId}/analyze-paragraph`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+// Analyze a section
+export async function analyzeSection(
+  paperId: string,
+  sessionId: string,
+  data: {
+    sectionId: string;
+    sectionTitle?: string;
+    paragraphIds?: string[];
+    content: string;
+    pageRange?: { start: number; end: number };
+    workflowConfig?: ReadingWorkflowConfig;
+  }
+): Promise<{
+  analysis: AiSectionAnalysisData;
+  usage: { promptTokens: number; completionTokens: number };
+}> {
+  return request(`/papers/${paperId}/agent-history/${sessionId}/analyze-section`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+// Generate reflection (for rethink mode)
+export async function generateReflection(
+  paperId: string,
+  sessionId: string,
+  data: {
+    level: 'sentence' | 'paragraph' | 'section';
+    analysisContext: any;
+    reflectionPrompt?: string;
+    workflowConfig?: ReadingWorkflowConfig;
+  }
+): Promise<{
+  reflection: string;
+  level: string;
+  usage: { promptTokens: number; completionTokens: number };
+}> {
+  return request(`/papers/${paperId}/agent-history/${sessionId}/reflect`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
 // ============ Site Statistics ============
 
 export interface SiteStats {
@@ -1272,7 +1419,17 @@ import type {
   ChallengeProblemType,
   ChallengeProblemStatus,
   IdeaLinkRelationship,
+  ChallengeProblemLink,
+  PromotionSuggestion,
+  ChallengeCurationJob,
+  PromoteIdeaRequest,
+  TriggerCurationRequest,
+  CreateChallengeProblemLinkRequest,
+  SuggestedParent,
 } from '../../../shared/types';
+
+// Re-export types that are used by pages
+export type { SuggestedParent };
 
 // List/search challenge problems
 export async function getChallengeProblems(options?: {
@@ -1410,6 +1567,101 @@ export async function getChallengeAreas(): Promise<{ areas: string[] }> {
 }
 
 // ============================================================================
+// CHALLENGE PROMOTION & CURATION API
+// ============================================================================
+
+// Get AI suggestions for promoting research ideas to challenges
+export async function getPromotionSuggestions(options?: {
+  paperId?: string;
+  historyId?: string;
+  limit?: number;
+}): Promise<{ suggestions: PromotionSuggestion[]; existingProblemsCount: number }> {
+  const params = new URLSearchParams();
+  if (options?.paperId) params.set('paperId', options.paperId);
+  if (options?.historyId) params.set('historyId', options.historyId);
+  if (options?.limit) params.set('limit', String(options.limit));
+  const query = params.toString();
+  return request<{ suggestions: PromotionSuggestion[]; existingProblemsCount: number }>(
+    `/challenges/suggest-promotions${query ? `?${query}` : ''}`
+  );
+}
+
+// Promote a research idea to a challenge problem
+export async function promoteIdeaToChallenge(
+  data: PromoteIdeaRequest
+): Promise<{ problem: ChallengeProblem }> {
+  return request<{ problem: ChallengeProblem }>('/challenges/promote', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+// Suggest parent problems for a new challenge using AI
+export async function suggestParentProblem(data: {
+  title: string;
+  description: string;
+  apiKey: string;
+  provider?: 'openai' | 'anthropic';
+  customPrompt?: string;
+  candidateIds?: string[];
+}): Promise<{ suggestions: SuggestedParent[] }> {
+  return request<{ suggestions: SuggestedParent[] }>('/challenges/suggest-parent', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+// Get cross-paper links for a challenge problem
+export async function getChallengeProblemLinks(
+  problemId: string
+): Promise<{ links: ChallengeProblemLink[] }> {
+  return request<{ links: ChallengeProblemLink[] }>(`/challenges/${problemId}/links`);
+}
+
+// Create a cross-paper link between challenge problems
+export async function createChallengeProblemLink(
+  sourceId: string,
+  data: CreateChallengeProblemLinkRequest
+): Promise<{ link: ChallengeProblemLink }> {
+  return request<{ link: ChallengeProblemLink }>(`/challenges/${sourceId}/links`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+// Delete a cross-paper link
+export async function deleteChallengeProblemLink(linkId: string): Promise<void> {
+  await request(`/challenges/links/${linkId}`, { method: 'DELETE' });
+}
+
+// Trigger an AI curation job
+export async function triggerCurationJob(
+  data: TriggerCurationRequest
+): Promise<{ job: ChallengeCurationJob }> {
+  return request<{ job: ChallengeCurationJob }>('/challenges/curate', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+// Get curation job status
+export async function getCurationJob(jobId: string): Promise<{ job: ChallengeCurationJob }> {
+  return request<{ job: ChallengeCurationJob }>(`/challenges/curate/${jobId}`);
+}
+
+// List user's curation jobs
+export async function getCurationJobs(options?: {
+  limit?: number;
+  offset?: number;
+}): Promise<{ jobs: ChallengeCurationJob[] }> {
+  const params = new URLSearchParams();
+  if (options?.limit) params.set('limit', String(options.limit));
+  if (options?.offset) params.set('offset', String(options.offset));
+  const query = params.toString();
+  return request<{ jobs: ChallengeCurationJob[] }>(`/challenges/curate${query ? `?${query}` : ''}`);
+}
+
+// ============================================================================
 // AI DEBATE API
 // ============================================================================
 
@@ -1513,5 +1765,1183 @@ export async function interveneDebate(
 export async function concludeDebate(id: string): Promise<{ session: DebateSession; conclusion: string }> {
   return request<{ session: DebateSession; conclusion: string }>(`/debates/${id}/conclude`, {
     method: 'POST',
+  });
+}
+
+// ============================================================================
+// AI PAPER DISCOVERY API
+// ============================================================================
+
+// Discovered paper from Semantic Scholar
+export interface DiscoveredPaper {
+  semanticScholarId: string;
+  arxivId: string | null;
+  doi: string | null;
+  title: string;
+  authors: string[];
+  abstract: string | null;
+  year: number | null;
+  citationCount: number;
+  url: string | null;
+  venue: string | null;
+  isOpenAccess: boolean;
+  pdfUrl: string | null;
+}
+
+// Search for papers using Semantic Scholar
+export async function discoverPapers(options: {
+  q: string;
+  limit?: number;
+  offset?: number;
+  year?: string;
+}): Promise<{ papers: DiscoveredPaper[]; total: number; offset: number; hasMore: boolean }> {
+  const params = new URLSearchParams();
+  params.set('q', options.q);
+  if (options.limit) params.set('limit', String(options.limit));
+  if (options.offset) params.set('offset', String(options.offset));
+  if (options.year) params.set('year', options.year);
+  return request<{ papers: DiscoveredPaper[]; total: number; offset: number; hasMore: boolean }>(
+    `/papers/discover/search?${params.toString()}`
+  );
+}
+
+// Get papers related to a paper in our database
+export async function getRelatedPapers(
+  paperId: string,
+  type?: 'recommendations' | 'citations' | 'references',
+  limit?: number
+): Promise<{ papers: DiscoveredPaper[]; semanticScholarId?: string; type: string }> {
+  const params = new URLSearchParams();
+  if (type) params.set('type', type);
+  if (limit) params.set('limit', String(limit));
+  const query = params.toString();
+  return request<{ papers: DiscoveredPaper[]; semanticScholarId?: string; type: string }>(
+    `/papers/discover/related/${paperId}${query ? `?${query}` : ''}`
+  );
+}
+
+// Get trending papers on a topic
+export async function getTrendingPapers(options?: {
+  topic?: string;
+  limit?: number;
+}): Promise<{ papers: DiscoveredPaper[]; topic: string }> {
+  const params = new URLSearchParams();
+  if (options?.topic) params.set('topic', options.topic);
+  if (options?.limit) params.set('limit', String(options.limit));
+  const query = params.toString();
+  return request<{ papers: DiscoveredPaper[]; topic: string }>(
+    `/papers/discover/trending${query ? `?${query}` : ''}`
+  );
+}
+
+// Batch add discovered papers
+export async function batchAddPapers(
+  papers: Array<{ arxivId?: string; title: string; authors: string[]; abstract?: string }>
+): Promise<{
+  results: Array<{ paper: PaperWithStats; isNew: boolean } | { error: string; title: string }>;
+  summary: { added: number; existing: number; errors: number };
+}> {
+  return request<{
+    results: Array<{ paper: PaperWithStats; isNew: boolean } | { error: string; title: string }>;
+    summary: { added: number; existing: number; errors: number };
+  }>('/papers/discover/batch-add', {
+    method: 'POST',
+    body: JSON.stringify({ papers }),
+  });
+}
+
+// AI-curated paper result
+export interface AICuratedPaper {
+  paper: DiscoveredPaper;
+  relevanceScore: number;
+  reasoning: string;
+  matchedAspects: string[];
+}
+
+// AI-powered paper search response
+export interface AISearchResponse {
+  papers: AICuratedPaper[];
+  analysis: string;
+  keyAspects: string[];
+  searchQueries: Array<{ query: string; rationale: string }>;
+  tokensUsed?: number;
+  papersAnalyzed?: number;
+  message?: string;
+}
+
+// AI-powered paper search
+export async function aiPaperSearch(options: {
+  researchIdea: string;
+  apiKey: string;
+  modelId?: string;
+  maxPapers?: number;
+}): Promise<AISearchResponse> {
+  return request<AISearchResponse>('/papers/discover/ai-search', {
+    method: 'POST',
+    body: JSON.stringify(options),
+  });
+}
+
+// ============================================================================
+// UNIFIED SEARCH API
+// ============================================================================
+
+// Unified search result item for papers
+export interface UnifiedPaperResult {
+  id: string;
+  type: 'paper';
+  arxivId?: string;
+  title: string;
+  authors: string[];
+  abstract?: string;
+  viewCount: number;
+  tags: string[];
+  createdAt: number;
+  readerCount: number;
+  annotationCount: number;
+  hasAiAnalysis: boolean;
+  aiReviewCount: number;
+  aiReviewAvgScore?: number;
+  // Uploader info
+  uploaderName?: string;
+  uploaderUsername?: string;
+  uploaderAvatar?: string;
+}
+
+// Unified search result item for debates
+export interface UnifiedDebateResult {
+  id: string;
+  type: 'debate';
+  title: string;
+  topic: string;
+  status: 'setup' | 'active' | 'paused' | 'concluded';
+  userName: string;
+  userAvatar?: string;
+  turnCount: number;
+  maxTurns: number;
+  winner?: 'affirmative' | 'negative' | 'draw';
+  conclusion?: string;
+  totalTokens: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+// Unified search result item for challenges
+export interface UnifiedChallengeResult {
+  id: string;
+  type: 'challenge';
+  problemType: 'open_question' | 'research_idea';
+  status: 'unsolved' | 'investigating' | 'solved';
+  title: string;
+  description?: string;
+  paperId?: string;
+  paperTitle?: string;
+  userName: string;
+  userAvatar?: string;
+  importance?: 'high' | 'medium' | 'low';
+  area?: string;
+  tags: string[];
+  upvotes: number;
+  downvotes: number;
+  commentCount: number;
+  childCount: number;
+  createdAt: number;
+}
+
+// Unified search result item for paper groups
+export interface UnifiedPaperGroupResult {
+  id: string;
+  type: 'paperGroup';
+  name: string;
+  description?: string;
+  visibility: 'private' | 'public';
+  userId: string;
+  userName: string;
+  userAvatar?: string;
+  paperCount: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+// Unified search result item for insights (open questions & research ideas)
+export interface UnifiedInsightResult {
+  id: string;
+  type: 'open_question' | 'research_idea';
+  sessionId: string;
+  paperId?: string;
+  paperTitle?: string;
+  arxivId?: string;
+  title: string;
+  description?: string;
+  importance?: 'high' | 'medium' | 'low';
+  methodology?: string;
+  expectedOutcome?: string;
+  feasibility?: 'high' | 'medium' | 'low';
+  novelty?: 'breakthrough' | 'moderate' | 'incremental';
+  relatedTopics?: string[];
+  userId: string;
+  userName: string;
+  userAvatar?: string;
+  modelUsed: string;
+  updatedAt: number;
+}
+
+// Unified search response
+export interface UnifiedSearchResponse {
+  papers: {
+    items: UnifiedPaperResult[];
+    total: number;
+  };
+  debates: {
+    items: UnifiedDebateResult[];
+    total: number;
+  };
+  challenges: {
+    items: UnifiedChallengeResult[];
+    total: number;
+  };
+  paperGroups: {
+    items: UnifiedPaperGroupResult[];
+    total: number;
+  };
+  insights: {
+    items: UnifiedInsightResult[];
+    total: number;
+  };
+}
+
+// Unified search across papers, debates, challenge problems, paper groups, and insights
+export async function unifiedSearch(options: {
+  q?: string;
+  types?: ('papers' | 'debates' | 'challenges' | 'paperGroups' | 'insights')[];
+  limit?: number;
+  sort?: 'recent' | 'popular' | 'discussed';
+}): Promise<UnifiedSearchResponse> {
+  const params = new URLSearchParams();
+  if (options.q) params.set('q', options.q);
+  if (options.types) params.set('types', options.types.join(','));
+  if (options.limit) params.set('limit', String(options.limit));
+  if (options.sort) params.set('sort', options.sort);
+  const query = params.toString();
+  return request<UnifiedSearchResponse>(`/papers/unified-search${query ? `?${query}` : ''}`);
+}
+
+// ============================================================================
+// CATEGORY API
+// ============================================================================
+
+import type { Category, CategoryWithChildren } from '../../../shared/types';
+
+// Get category tree (hierarchical)
+export async function getCategoryTree(): Promise<{ categories: CategoryWithChildren[] }> {
+  return request<{ categories: CategoryWithChildren[] }>('/categories');
+}
+
+// Get flat list of categories
+export async function getCategoriesFlat(): Promise<{ categories: Category[] }> {
+  return request<{ categories: Category[] }>('/categories/flat');
+}
+
+// Get a single category
+export async function getCategory(id: string): Promise<{ category: Category }> {
+  return request<{ category: Category }>(`/categories/${id}`);
+}
+
+// Create a new category (admin only)
+export async function createCategory(data: {
+  name: string;
+  slug?: string;
+  description?: string;
+  parentId?: string;
+  icon?: string;
+  color?: string;
+}): Promise<{ category: Category }> {
+  return request<{ category: Category }>('/categories', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+// Update a category (admin only)
+export async function updateCategory(
+  id: string,
+  data: {
+    name?: string;
+    slug?: string;
+    description?: string;
+    parentId?: string;
+    icon?: string;
+    color?: string;
+    orderIndex?: number;
+  }
+): Promise<{ category: Category }> {
+  return request<{ category: Category }>(`/categories/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  });
+}
+
+// Delete a category (admin only)
+export async function deleteCategory(id: string): Promise<void> {
+  await request(`/categories/${id}`, { method: 'DELETE' });
+}
+
+// Reorder categories (admin only)
+export async function reorderCategories(
+  orders: Array<{ id: string; orderIndex: number }>
+): Promise<void> {
+  await request('/categories/reorder', {
+    method: 'POST',
+    body: JSON.stringify({ orders }),
+  });
+}
+
+// Get papers in a category
+export async function getCategoryPapers(
+  categoryId: string,
+  options?: {
+    includeSubcategories?: boolean;
+    limit?: number;
+    offset?: number;
+  }
+): Promise<{
+  papers: PaperWithStats[];
+  total: number;
+  category: Category;
+}> {
+  const params = new URLSearchParams();
+  if (options?.includeSubcategories) params.set('includeSubcategories', 'true');
+  if (options?.limit) params.set('limit', String(options.limit));
+  if (options?.offset) params.set('offset', String(options.offset));
+  const query = params.toString();
+  return request<{ papers: PaperWithStats[]; total: number; category: Category }>(
+    `/categories/${categoryId}/papers${query ? `?${query}` : ''}`
+  );
+}
+
+// Add paper to categories (uploader or admin)
+export async function addPaperToCategories(
+  paperId: string,
+  categoryIds: string[]
+): Promise<{ success: boolean; categories: Category[] }> {
+  return request<{ success: boolean; categories: Category[] }>(
+    `/categories/papers/${paperId}/categories`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ categoryIds }),
+    }
+  );
+}
+
+// Remove paper from a category (uploader or admin)
+export async function removePaperFromCategory(
+  paperId: string,
+  categoryId: string
+): Promise<void> {
+  await request(`/categories/papers/${paperId}/categories/${categoryId}`, {
+    method: 'DELETE',
+  });
+}
+
+// Get categories for a paper
+export async function getPaperCategories(paperId: string): Promise<{
+  categories: Category[];
+}> {
+  return request<{ categories: Category[] }>(`/categories/papers/${paperId}/categories`);
+}
+
+// ============================================================================
+// AI AUTO-CATEGORIZATION
+// ============================================================================
+
+export interface AICategorySuggestion {
+  id: string;
+  name: string;
+  path: string;
+}
+
+export interface AISuggestResponse {
+  paperId: string;
+  paperTitle: string;
+  suggestions: AICategorySuggestion[];
+  reasoning: string;
+  tokensUsed: number;
+}
+
+export interface BulkSuggestResult {
+  paperId: string;
+  paperTitle: string;
+  suggestions: AICategorySuggestion[];
+  reasoning?: string;
+  status: 'success' | 'parse_error' | 'api_error' | 'error';
+}
+
+export interface BulkSuggestResponse {
+  results: BulkSuggestResult[];
+  totalTokens: number;
+  processed: number;
+  total: number;
+}
+
+// Get AI suggestions for a single paper
+export async function getAICategorySuggestions(
+  paperId: string,
+  apiKey: string,
+  model?: string
+): Promise<AISuggestResponse> {
+  return request<AISuggestResponse>('/categories/ai/suggest', {
+    method: 'POST',
+    body: JSON.stringify({ paperId, apiKey, model }),
+  });
+}
+
+// Apply AI-suggested categories to a paper
+export async function applyAICategories(
+  paperId: string,
+  categoryIds: string[]
+): Promise<{ success: boolean; paperId: string; categories: Category[] }> {
+  return request<{ success: boolean; paperId: string; categories: Category[] }>(
+    '/categories/ai/apply',
+    {
+      method: 'POST',
+      body: JSON.stringify({ paperId, categoryIds }),
+    }
+  );
+}
+
+// Get AI suggestions for multiple papers
+export async function getBulkAICategorySuggestions(
+  paperIds: string[],
+  apiKey: string,
+  model?: string
+): Promise<BulkSuggestResponse> {
+  return request<BulkSuggestResponse>('/categories/ai/bulk-suggest', {
+    method: 'POST',
+    body: JSON.stringify({ paperIds, apiKey, model }),
+  });
+}
+
+// Apply categories to multiple papers at once
+export async function applyBulkAICategories(
+  assignments: Array<{ paperId: string; categoryIds: string[] }>
+): Promise<{ success: boolean; applied: number; total: number }> {
+  return request<{ success: boolean; applied: number; total: number }>(
+    '/categories/ai/bulk-apply',
+    {
+      method: 'POST',
+      body: JSON.stringify({ assignments }),
+    }
+  );
+}
+
+// ============================================================================
+// FEEDBACK / BUG REPORTS / FEATURE REQUESTS API
+// ============================================================================
+
+export type FeedbackType = 'bug' | 'feature';
+export type FeedbackStatus = 'open' | 'in_progress' | 'resolved' | 'closed' | 'wont_fix';
+export type FeedbackPriority = 'low' | 'medium' | 'high' | 'critical';
+export type FeedbackSort = 'newest' | 'oldest' | 'most_upvoted' | 'priority';
+
+export interface FeedbackRequest {
+  id: string;
+  type: FeedbackType;
+  title: string;
+  description: string;
+  images: string[];
+  status: FeedbackStatus;
+  priority: FeedbackPriority;
+  submitterId?: string;
+  submitterName: string;
+  submitterEmail?: string;
+  upvotes: number;
+  hasUpvoted: boolean;
+  adminResponse?: string;
+  resolvedAt?: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface FeedbackListResponse {
+  feedback: FeedbackRequest[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
+export interface FeedbackStats {
+  total: number;
+  bugs: number;
+  features: number;
+  open: number;
+  inProgress: number;
+  resolved: number;
+  closed: number;
+  critical: number;
+  high: number;
+}
+
+// List all feedback requests (public)
+export async function listFeedback(options?: {
+  type?: FeedbackType;
+  status?: FeedbackStatus;
+  sort?: FeedbackSort;
+  page?: number;
+  limit?: number;
+}): Promise<FeedbackListResponse> {
+  const params = new URLSearchParams();
+  if (options?.type) params.set('type', options.type);
+  if (options?.status) params.set('status', options.status);
+  if (options?.sort) params.set('sort', options.sort);
+  if (options?.page) params.set('page', String(options.page));
+  if (options?.limit) params.set('limit', String(options.limit));
+  const query = params.toString();
+  return request<FeedbackListResponse>(`/feedback${query ? `?${query}` : ''}`);
+}
+
+// Get a single feedback request (public)
+export async function getFeedback(id: string): Promise<FeedbackRequest> {
+  return request<FeedbackRequest>(`/feedback/${id}`);
+}
+
+// Submit new feedback (public - works for both logged-in and anonymous users)
+// Note: Uses direct backend URL in dev mode to bypass Vite proxy body size limits
+export async function submitFeedback(data: {
+  type: FeedbackType;
+  title: string;
+  description: string;
+  images?: string[];
+  submitterName?: string;
+  submitterEmail?: string;
+}): Promise<FeedbackRequest> {
+  // Debug logging
+  console.log('[API DEBUG] submitFeedback called with data:', {
+    ...data,
+    images: data.images ? `Array of ${data.images.length} images` : 'undefined',
+    imageDetails: data.images?.map((img, i) => ({
+      index: i,
+      type: typeof img,
+      length: typeof img === 'string' ? img.length : 'N/A',
+      startsWithDataImage: typeof img === 'string' ? img.substring(0, 30) : 'N/A',
+    })),
+  });
+
+  const body = JSON.stringify(data);
+  console.log('[API DEBUG] JSON body length:', body.length, 'bytes');
+
+  // In development, call backend directly to avoid Vite proxy body size limits
+  // In production, use relative URL
+  const isDev = import.meta.env.DEV;
+  const baseUrl = isDev ? 'http://localhost:3001/api' : '/api';
+
+  const response = await fetch(`${baseUrl}/feedback`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    credentials: 'include',
+    body,
+  });
+
+  const result = await response.json();
+
+  if (!response.ok) {
+    throw new Error(result.message || 'Failed to submit feedback');
+  }
+
+  return result as FeedbackRequest;
+}
+
+// Toggle upvote on feedback (requires auth)
+export async function toggleFeedbackUpvote(id: string): Promise<{ upvoted: boolean; upvotes: number }> {
+  return request<{ upvoted: boolean; upvotes: number }>(`/feedback/${id}/upvote`, {
+    method: 'POST',
+  });
+}
+
+// Update feedback (admin only)
+export async function updateFeedback(
+  id: string,
+  data: {
+    status?: FeedbackStatus;
+    priority?: FeedbackPriority;
+    adminResponse?: string;
+  }
+): Promise<FeedbackRequest> {
+  return request<FeedbackRequest>(`/feedback/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  });
+}
+
+// Delete feedback (admin only)
+export async function deleteFeedback(id: string): Promise<void> {
+  await request(`/feedback/${id}`, { method: 'DELETE' });
+}
+
+// Get feedback stats (admin only)
+export async function getFeedbackStats(): Promise<FeedbackStats> {
+  return request<FeedbackStats>('/feedback/admin/stats');
+}
+
+// ============================================================================
+// PAPER AVATAR API
+// ============================================================================
+
+// Generate a new paper avatar using AI
+export async function generatePaperAvatar(
+  paperId: string,
+  options: GeneratePaperAvatarRequest
+): Promise<GeneratePaperAvatarResponse> {
+  return request<GeneratePaperAvatarResponse>(`/papers/${paperId}/avatar/generate`, {
+    method: 'POST',
+    body: JSON.stringify(options),
+  });
+}
+
+// Get all avatars for a paper
+export async function getPaperAvatars(paperId: string): Promise<{ avatars: PaperAvatar[] }> {
+  return request<{ avatars: PaperAvatar[] }>(`/papers/${paperId}/avatars`);
+}
+
+// Activate a specific avatar (set as the displayed avatar)
+export async function activatePaperAvatar(paperId: string, avatarId: string): Promise<void> {
+  await request(`/papers/${paperId}/avatar/${avatarId}/activate`, { method: 'PUT' });
+}
+
+// Delete an avatar
+export async function deletePaperAvatar(paperId: string, avatarId: string): Promise<void> {
+  await request(`/papers/${paperId}/avatar/${avatarId}`, { method: 'DELETE' });
+}
+
+// ============================================================================
+// PAPER PRIVACY & COLLABORATION API
+// ============================================================================
+
+// Update paper visibility (public/private)
+export async function updatePaperVisibility(
+  paperId: string,
+  visibility: PaperVisibility
+): Promise<{ success: boolean; visibility: PaperVisibility }> {
+  return request(`/papers/${paperId}/visibility`, {
+    method: 'PUT',
+    body: JSON.stringify({ visibility }),
+  });
+}
+
+// Get paper collaborators
+export async function getPaperCollaborators(paperId: string): Promise<{ collaborators: PaperCollaborator[] }> {
+  return request(`/papers/${paperId}/collaborators`);
+}
+
+// Add a collaborator to a paper
+export async function addPaperCollaborator(
+  paperId: string,
+  username: string,
+  role: PaperCollaboratorRole = 'viewer'
+): Promise<{ collaborator: PaperCollaborator }> {
+  return request(`/papers/${paperId}/collaborators`, {
+    method: 'POST',
+    body: JSON.stringify({ username, role }),
+  });
+}
+
+// Update collaborator role
+export async function updatePaperCollaboratorRole(
+  paperId: string,
+  collaboratorId: string,
+  role: PaperCollaboratorRole
+): Promise<{ success: boolean; role: PaperCollaboratorRole }> {
+  return request(`/papers/${paperId}/collaborators/${collaboratorId}`, {
+    method: 'PUT',
+    body: JSON.stringify({ role }),
+  });
+}
+
+// Remove a collaborator
+export async function removePaperCollaborator(paperId: string, collaboratorId: string): Promise<{ success: boolean }> {
+  return request(`/papers/${paperId}/collaborators/${collaboratorId}`, {
+    method: 'DELETE',
+  });
+}
+
+// Fork a paper (create a private copy)
+export async function forkPaper(
+  paperId: string,
+  visibility: PaperVisibility = 'private'
+): Promise<{ paper: PaperWithStats }> {
+  return request(`/papers/${paperId}/fork`, {
+    method: 'POST',
+    body: JSON.stringify({ visibility }),
+  });
+}
+
+// Get forks of a paper
+export async function getPaperForks(paperId: string): Promise<{
+  forks: Array<{
+    id: string;
+    title: string;
+    visibility: PaperVisibility;
+    uploaderName?: string;
+    uploaderUsername?: string;
+    createdAt: number;
+  }>;
+}> {
+  return request(`/papers/${paperId}/forks`);
+}
+
+// Search users by username or display name
+export async function searchUsers(query: string, limit: number = 10): Promise<{
+  users: Array<{
+    id: string;
+    username: string;
+    displayName: string;
+    avatar?: string;
+  }>;
+}> {
+  return request(`/auth/users/search?q=${encodeURIComponent(query)}&limit=${limit}`);
+}
+
+// ============================================================================
+// PAPER GROUP APIs
+// ============================================================================
+
+// Get all paper groups (user's own + public)
+export async function getPaperGroups(search?: string): Promise<{ groups: PaperGroup[] }> {
+  const params = search ? `?search=${encodeURIComponent(search)}` : '';
+  return request(`/paper-groups${params}`);
+}
+
+// Create a new paper group
+export async function createPaperGroup(data: CreatePaperGroupRequest): Promise<{ group: PaperGroup }> {
+  return request('/paper-groups', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+// Get a specific paper group with papers
+export async function getPaperGroup(groupId: string): Promise<{ group: PaperGroupWithPapers }> {
+  return request(`/paper-groups/${groupId}`);
+}
+
+// Update a paper group
+export async function updatePaperGroup(
+  groupId: string,
+  data: Partial<CreatePaperGroupRequest>
+): Promise<{ group: PaperGroup }> {
+  return request(`/paper-groups/${groupId}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  });
+}
+
+// Delete a paper group
+export async function deletePaperGroup(groupId: string): Promise<void> {
+  return request(`/paper-groups/${groupId}`, {
+    method: 'DELETE',
+  });
+}
+
+// Add papers to a group
+export async function addPapersToGroup(
+  groupId: string,
+  paperIds: string[]
+): Promise<{ members: PaperGroupMember[] }> {
+  return request(`/paper-groups/${groupId}/papers`, {
+    method: 'POST',
+    body: JSON.stringify({ paperIds }),
+  });
+}
+
+// Remove a paper from a group
+export async function removePaperFromGroup(groupId: string, paperId: string): Promise<void> {
+  return request(`/paper-groups/${groupId}/papers/${paperId}`, {
+    method: 'DELETE',
+  });
+}
+
+// Reorder papers in a group
+export async function reorderGroupPapers(groupId: string, paperIds: string[]): Promise<void> {
+  return request(`/paper-groups/${groupId}/papers/reorder`, {
+    method: 'PUT',
+    body: JSON.stringify({ paperIds }),
+  });
+}
+
+// ============================================================================
+// GROUP AI SESSION APIs
+// ============================================================================
+
+// Create a new AI session for a paper group
+export async function createGroupAiSession(
+  groupId: string,
+  data: StartGroupReadingRequest
+): Promise<{ session: GroupAiSession }> {
+  return request(`/paper-groups/${groupId}/ai-session`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+// Get AI sessions for a paper group
+export async function getGroupAiSessions(groupId: string): Promise<{ sessions: GroupAiSession[] }> {
+  return request(`/paper-groups/${groupId}/ai-sessions`);
+}
+
+// Get a specific AI session
+export async function getGroupAiSession(
+  groupId: string,
+  sessionId: string
+): Promise<{ session: GroupAiSession }> {
+  return request(`/paper-groups/${groupId}/ai-session/${sessionId}`);
+}
+
+// Set API key for a group AI session
+export async function setGroupSessionApiKey(
+  groupId: string,
+  sessionId: string,
+  apiKey: string
+): Promise<void> {
+  return request(`/paper-groups/${groupId}/ai-session/${sessionId}/set-api-key`, {
+    method: 'POST',
+    body: JSON.stringify({ apiKey }),
+  });
+}
+
+// Start reading all papers in a group
+export async function startGroupReading(
+  groupId: string,
+  sessionId: string
+): Promise<{ session: GroupAiSession }> {
+  return request(`/paper-groups/${groupId}/ai-session/${sessionId}/read-papers`, {
+    method: 'POST',
+  });
+}
+
+// Chat with AI about papers in a group
+export async function chatWithGroupSession(
+  groupId: string,
+  sessionId: string,
+  message: string
+): Promise<{ response: string; session: GroupAiSession }> {
+  return request(`/paper-groups/${groupId}/ai-session/${sessionId}/chat`, {
+    method: 'POST',
+    body: JSON.stringify({ message }),
+  });
+}
+
+// Update token limit for a group AI session
+export async function updateGroupSessionTokenLimit(
+  groupId: string,
+  sessionId: string,
+  tokenLimit: number
+): Promise<{ session: GroupAiSession }> {
+  return request(`/paper-groups/${groupId}/ai-session/${sessionId}/token-limit`, {
+    method: 'PUT',
+    body: JSON.stringify({ tokenLimit }),
+  });
+}
+
+// ==================== Debate Paper Reading ====================
+
+// Start debate paper reading (agents read papers before debating)
+export async function startDebatePaperReading(
+  debateId: string
+): Promise<{ debate: DebateSession }> {
+  return request(`/debates/${debateId}/read-papers`, {
+    method: 'POST',
+  });
+}
+
+// Get debate reading progress
+export async function getDebateReadingProgress(
+  debateId: string
+): Promise<{
+  status: string;
+  papersRead: number;
+  totalPapers: number;
+  progress: number;
+}> {
+  return request(`/debates/${debateId}/reading-progress`);
+}
+
+// ==================== Background Reading ====================
+
+import type {
+  BackgroundReadingJob,
+  StartBackgroundReadingResponse,
+  BackgroundJobStatusResponse,
+  UserBackgroundJobsResponse,
+  BackgroundJobActionResponse,
+} from '../../../shared/types';
+
+// Start a background reading job for a paper
+export async function startBackgroundReading(
+  paperId: string,
+  sessionId: string,
+  workflowConfig?: any
+): Promise<StartBackgroundReadingResponse> {
+  return request('/background-reading/start', {
+    method: 'POST',
+    body: JSON.stringify({ paperId, sessionId, workflowConfig }),
+  });
+}
+
+// Get status of a background reading job
+export async function getBackgroundJobStatus(
+  jobId: string
+): Promise<BackgroundJobStatusResponse> {
+  return request(`/background-reading/status/${jobId}`);
+}
+
+// List user's background reading jobs
+export async function getUserBackgroundJobs(
+  options?: { status?: string; limit?: number }
+): Promise<UserBackgroundJobsResponse> {
+  const params = new URLSearchParams();
+  if (options?.status) params.set('status', options.status);
+  if (options?.limit) params.set('limit', String(options.limit));
+  const queryString = params.toString();
+  return request(`/background-reading/user-jobs${queryString ? `?${queryString}` : ''}`);
+}
+
+// Get background jobs for a specific paper
+export async function getPaperBackgroundJobs(
+  paperId: string
+): Promise<UserBackgroundJobsResponse> {
+  return request(`/background-reading/paper/${paperId}`);
+}
+
+// Cancel a background reading job
+export async function cancelBackgroundJob(
+  jobId: string
+): Promise<BackgroundJobActionResponse> {
+  return request(`/background-reading/cancel/${jobId}`, {
+    method: 'POST',
+  });
+}
+
+// Resume a paused or failed background reading job
+export async function resumeBackgroundJob(
+  jobId: string
+): Promise<BackgroundJobActionResponse> {
+  return request(`/background-reading/resume/${jobId}`, {
+    method: 'POST',
+  });
+}
+
+// ============================================================================
+// INSIGHTS API - Open Questions & Research Ideas from AI Sessions
+// ============================================================================
+
+// Open Question with context from AI session
+export interface OpenQuestionWithContext {
+  id: string;
+  question: string;
+  context: string;
+  importance: 'high' | 'medium' | 'low';
+  relatedTopics: string[];
+  sessionId: string;
+  paperId?: string;
+  paperTitle?: string;
+  userId: string;
+  userName: string;
+  userAvatar?: string;
+  createdAt: number;
+}
+
+// Research Idea with context from AI session
+export interface ResearchIdeaWithContext {
+  id: string;
+  title: string;
+  description: string;
+  methodology: string;
+  expectedOutcome: string;
+  feasibility: 'high' | 'medium' | 'low';
+  novelty: 'incremental' | 'moderate' | 'breakthrough';
+  prerequisites: string[];
+  sessionId: string;
+  paperId?: string;
+  paperTitle?: string;
+  userId: string;
+  userName: string;
+  userAvatar?: string;
+  createdAt: number;
+}
+
+// Response for listing open questions
+export interface OpenQuestionsResponse {
+  questions: OpenQuestionWithContext[];
+  total: number;
+}
+
+// Response for listing research ideas
+export interface ResearchIdeasResponse {
+  ideas: ResearchIdeaWithContext[];
+  total: number;
+}
+
+// Insights stats response
+export interface InsightsStatsResponse {
+  // Total individual counts
+  totalOpenQuestions: number;
+  totalResearchIdeas: number;
+  // Session counts (backwards compatibility)
+  openQuestionSessions: number;
+  researchIdeaSessions: number;
+  papersWithInsights: number;
+  totalChallengeProblems: number;
+  promotedIdeas: number;
+}
+
+// AI Reorganization suggestion
+export interface ReorganizeSuggestions {
+  promotions?: Array<{
+    insightIndex: number;
+    suggestedTitle?: string;
+    suggestedParentId?: string | null;
+    reasoning: string;
+    confidence: number;
+    insight?: {
+      sessionId: string;
+      ideaId: string;
+      paperTitle?: string;
+      type: 'open_question' | 'research_idea';
+      title: string;
+      description: string;
+    };
+  }>;
+  newBranches?: Array<{
+    title: string;
+    description: string;
+    reasoning: string;
+  }>;
+  duplicates?: Array<{
+    insightIndex: number;
+    existingProblemId: string;
+    reasoning: string;
+  }>;
+  relationships?: Array<{
+    sourceInsightIndex: number;
+    targetProblemId: string;
+    relationship: string;
+    reasoning: string;
+  }>;
+  summary?: string;
+  error?: string;
+  raw?: string;
+}
+
+// Response for reorganization
+export interface ReorganizeResponse {
+  suggestions: ReorganizeSuggestions;
+  insightsAnalyzed: number;
+  existingProblemsCount: number;
+}
+
+// Get all open questions from AI sessions
+export async function getOpenQuestions(options?: {
+  q?: string;
+  paperId?: string;
+  userId?: string;
+  importance?: 'high' | 'medium' | 'low';
+  publicOnly?: boolean;
+  sort?: 'recent' | 'oldest' | 'importance';
+  limit?: number;
+  offset?: number;
+}): Promise<OpenQuestionsResponse> {
+  const params = new URLSearchParams();
+  if (options?.q) params.set('q', options.q);
+  if (options?.paperId) params.set('paperId', options.paperId);
+  if (options?.userId) params.set('userId', options.userId);
+  if (options?.importance) params.set('importance', options.importance);
+  if (options?.publicOnly !== undefined) params.set('publicOnly', String(options.publicOnly));
+  if (options?.sort) params.set('sort', options.sort);
+  if (options?.limit) params.set('limit', String(options.limit));
+  if (options?.offset) params.set('offset', String(options.offset));
+  const queryString = params.toString();
+  return request(`/insights/open-questions${queryString ? `?${queryString}` : ''}`);
+}
+
+// Get all research ideas from AI sessions
+export async function getResearchIdeas(options?: {
+  q?: string;
+  paperId?: string;
+  userId?: string;
+  feasibility?: 'high' | 'medium' | 'low';
+  novelty?: 'incremental' | 'moderate' | 'breakthrough';
+  publicOnly?: boolean;
+  sort?: 'recent' | 'oldest' | 'novelty' | 'feasibility';
+  limit?: number;
+  offset?: number;
+}): Promise<ResearchIdeasResponse> {
+  const params = new URLSearchParams();
+  if (options?.q) params.set('q', options.q);
+  if (options?.paperId) params.set('paperId', options.paperId);
+  if (options?.userId) params.set('userId', options.userId);
+  if (options?.feasibility) params.set('feasibility', options.feasibility);
+  if (options?.novelty) params.set('novelty', options.novelty);
+  if (options?.publicOnly !== undefined) params.set('publicOnly', String(options.publicOnly));
+  if (options?.sort) params.set('sort', options.sort);
+  if (options?.limit) params.set('limit', String(options.limit));
+  if (options?.offset) params.set('offset', String(options.offset));
+  const queryString = params.toString();
+  return request(`/insights/research-ideas${queryString ? `?${queryString}` : ''}`);
+}
+
+// Get insights stats
+export async function getInsightsStats(): Promise<InsightsStatsResponse> {
+  return request('/insights/stats');
+}
+
+// AI reorganization of research git tree
+export async function reorganizeInsights(data: {
+  apiKey: string;
+  provider?: 'openai' | 'anthropic';
+  scope?: 'all' | 'new';
+}): Promise<ReorganizeResponse> {
+  return request<ReorganizeResponse>('/insights/reorganize', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+// Paper search result from AI
+export interface PaperSearchResult {
+  title: string;
+  authors: string;
+  year: number;
+  source: string;
+  arxivId?: string;
+  url?: string;
+  relevance: string;
+  relevanceScore: number;
+  existsOnPlatform?: boolean;
+  platformPaperId?: string;
+}
+
+export interface PaperSearchResponse {
+  papers: PaperSearchResult[];
+  searchSummary?: string;
+  question: string;
+  error?: string;
+  promptUsed?: string;
+  apiSources?: string[];
+  totalFound?: number;
+}
+
+// AI search for related papers (uses Semantic Scholar and arXiv APIs, then AI ranks results)
+export async function searchRelatedPapers(data: {
+  question: string;
+  context?: string;
+  apiKey: string;
+  provider?: 'openai' | 'anthropic';
+  customPrompt?: string;
+}): Promise<PaperSearchResponse> {
+  return request<PaperSearchResponse>('/insights/search-papers', {
+    method: 'POST',
+    body: JSON.stringify(data),
   });
 }
