@@ -44,6 +44,13 @@ export default defineConfig({
       '/api': {
         target: 'http://localhost:3001',
         changeOrigin: true,
+        configure: (proxy) => {
+          // Allow large request bodies for image uploads
+          proxy.on('proxyReq', (proxyReq, req) => {
+            // The proxy should stream the body, not buffer it
+            // This is handled automatically by http-proxy for POST requests
+          });
+        },
       },
     },
   },

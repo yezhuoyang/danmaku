@@ -14,7 +14,17 @@ export function PaperCard({ paper }: PaperCardProps) {
 
   return (
     <Link href={`/paper/${paper.id}`}>
-      <Card className="h-full cursor-pointer hover:shadow-md transition-shadow">
+      <Card className="h-full cursor-pointer hover:shadow-md transition-shadow overflow-hidden">
+        {/* Paper Avatar as Hero Image */}
+        {paper.activeAvatarUrl && (
+          <div className="aspect-video bg-slate-100 dark:bg-slate-800 overflow-hidden">
+            <img
+              src={paper.activeAvatarUrl}
+              alt=""
+              className="w-full h-full object-cover"
+            />
+          </div>
+        )}
         <CardHeader className="pb-2">
           <CardTitle className="text-base line-clamp-2">{paper.title}</CardTitle>
           <CardDescription className="text-sm">{authors}</CardDescription>

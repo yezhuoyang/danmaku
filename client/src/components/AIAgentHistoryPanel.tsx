@@ -24,11 +24,13 @@ import {
   Lock,
   BookOpen,
   AlertCircle,
+  AlertTriangle,
   Key,
   Send,
   Loader2,
   Bug,
   Trophy,
+  Settings,
 } from "lucide-react";
 import type { AiAgentHistory, AiAgentMessage, AiModelInfo, AiModelProvider, AiModelRanking } from "../../../shared/types";
 import { DEFAULT_AI_MODELS } from "../../../shared/types";
@@ -93,6 +95,9 @@ function HistoryCard({
   const [isSettingApiKey, setIsSettingApiKey] = useState(false);
   const [chatMessage, setChatMessage] = useState("");
   const [isSendingMessage, setIsSendingMessage] = useState(false);
+  const [showTokenLimitDialog, setShowTokenLimitDialog] = useState(false);
+  const [newTokenLimit, setNewTokenLimit] = useState(history.tokenLimit ?? 100000);
+  const [isUpdatingTokenLimit, setIsUpdatingTokenLimit] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Helper to check if a message is an internal/system message (not user conversation)
@@ -202,6 +207,22 @@ function HistoryCard({
     }
   };
 
+  const handleUpdateTokenLimit = async () => {
+    setIsUpdatingTokenLimit(true);
+    try {
+      const result = await api.updateAiAgentHistory(paperId, history.id, {
+        tokenLimit: newTokenLimit,
+      });
+      onUpdate(result.history);
+      setShowTokenLimitDialog(false);
+      toast.success("Token limit updated");
+    } catch (error: any) {
+      toast.error(error.message || "Failed to update token limit");
+    } finally {
+      setIsUpdatingTokenLimit(false);
+    }
+  };
+
   return (
     <div
       className={`border rounded-lg p-4 transition-all ${
@@ -301,36 +322,62 @@ function HistoryCard({
           {(history.apiKeySet || (history.totalPromptTokens ?? 0) > 0 || (history.totalCompletionTokens ?? 0) > 0) && (() => {
             const promptTokens = history.totalPromptTokens ?? 0;
             const completionTokens = history.totalCompletionTokens ?? 0;
-            const maxTokens = history.maxContextTokens ?? 128000;
+            const tokenLimit = history.tokenLimit ?? 100000;
             const rounds = history.conversationRounds ?? 0;
             const totalTokens = promptTokens + completionTokens;
-            const percentage = maxTokens > 0 ? (totalTokens / maxTokens * 100) : 0;
+            const limitPercentage = tokenLimit > 0 ? (totalTokens / tokenLimit * 100) : 0;
 
             return (
-              <div className="mt-3 p-3 bg-slate-50 dark:bg-slate-800/50 rounded-lg">
-                <div className="flex items-center justify-between text-xs text-slate-600 dark:text-slate-400 mb-2">
+              <div className="mt-3 p-3 bg-slate-50 dark:bg-slate-800/50 rounded-lg space-y-2">
+                {/* Token Limit Warning */}
+                {history.tokenLimitReached && (
+                  <div className="flex items-start gap-2 p-2 bg-amber-50 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-800 rounded-lg mb-2">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                    <div className="flex-1">
+                      <p className="text-xs font-medium text-amber-800 dark:text-amber-200">
+                        Token Limit Reached
+                      </p>
+                      <p className="text-[10px] text-amber-700 dark:text-amber-300 mt-0.5">
+                        Increase your limit to continue using AI features.
+                      </p>
+                    </div>
+                  </div>
+                )}
+                <div className="flex items-center justify-between text-xs text-slate-600 dark:text-slate-400">
                   <span>
-                    Token Usage: {totalTokens.toLocaleString()} / {maxTokens.toLocaleString()}
+                    Token Usage: {totalTokens.toLocaleString()}
+                    {tokenLimit > 0 && ` / ${tokenLimit.toLocaleString()} limit`}
                   </span>
-                  <span>
-                    {percentage.toFixed(1)}%
-                  </span>
+                  {isOwner && (
+                    <button
+                      onClick={() => {
+                        setNewTokenLimit(tokenLimit || 100000);
+                        setShowTokenLimitDialog(true);
+                      }}
+                      className="flex items-center gap-1 text-indigo-600 dark:text-indigo-400 hover:underline"
+                    >
+                      <Settings className="w-3 h-3" />
+                      Adjust
+                    </button>
+                  )}
                 </div>
-                <div className="w-full h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
-                  <div
-                    className={`h-full transition-all duration-300 ${
-                      percentage > 90
-                        ? 'bg-red-500'
-                        : percentage > 70
-                        ? 'bg-amber-500'
-                        : 'bg-indigo-500'
-                    }`}
-                    style={{
-                      width: `${Math.min(100, percentage)}%`
-                    }}
-                  />
-                </div>
-                <div className="flex items-center justify-between mt-2 text-[10px] text-slate-500 dark:text-slate-500">
+                {tokenLimit > 0 && (
+                  <div className="w-full h-2 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full transition-all duration-300 ${
+                        limitPercentage >= 100
+                          ? 'bg-red-500'
+                          : limitPercentage > 80
+                          ? 'bg-amber-500'
+                          : 'bg-green-500'
+                      }`}
+                      style={{
+                        width: `${Math.min(100, limitPercentage)}%`
+                      }}
+                    />
+                  </div>
+                )}
+                <div className="flex items-center justify-between text-[10px] text-slate-500 dark:text-slate-500">
                   <span>Prompt: {promptTokens.toLocaleString()} | Completion: {completionTokens.toLocaleString()}</span>
                   <span>{rounds} round{rounds !== 1 ? 's' : ''}</span>
                 </div>
@@ -555,6 +602,60 @@ function HistoryCard({
           </Button>
         </div>
       )}
+
+      {/* Token Limit Dialog */}
+      {showTokenLimitDialog && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowTokenLimitDialog(false)}>
+          <div className="bg-white dark:bg-slate-800 rounded-xl p-6 max-w-md w-full mx-4 shadow-xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center gap-2 mb-4">
+              <Settings className="w-5 h-5 text-indigo-500" />
+              <h3 className="font-semibold text-lg text-slate-900 dark:text-white">Adjust Token Limit</h3>
+            </div>
+            <div className="mb-4 p-3 bg-slate-100 dark:bg-slate-700 rounded-lg">
+              <div className="text-sm font-medium text-slate-600 dark:text-slate-400">Current Usage</div>
+              <div className="text-2xl font-bold text-indigo-600 dark:text-indigo-400">
+                {((history.totalPromptTokens ?? 0) + (history.totalCompletionTokens ?? 0)).toLocaleString()}
+                <span className="text-sm font-normal text-slate-500 ml-1">tokens</span>
+              </div>
+              {(history.tokenLimit ?? 0) > 0 && (
+                <div className="text-xs text-slate-500 mt-1">
+                  Current limit: {(history.tokenLimit ?? 0).toLocaleString()} tokens
+                </div>
+              )}
+            </div>
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
+                New Token Limit
+              </label>
+              <select
+                value={newTokenLimit.toString()}
+                onChange={(e) => setNewTokenLimit(parseInt(e.target.value))}
+                className="w-full h-10 px-3 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+              >
+                <option value="50000">50,000 tokens (~$0.50)</option>
+                <option value="100000">100,000 tokens (~$1.00)</option>
+                <option value="200000">200,000 tokens (~$2.00)</option>
+                <option value="500000">500,000 tokens (~$5.00)</option>
+                <option value="1000000">1,000,000 tokens (~$10.00)</option>
+                <option value="2000000">2,000,000 tokens (~$20.00)</option>
+                <option value="0">Unlimited (no limit)</option>
+              </select>
+              <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                Estimated costs based on GPT-4o-mini pricing. Actual costs may vary by model.
+              </p>
+            </div>
+            <div className="flex gap-2 justify-end">
+              <Button variant="outline" size="sm" onClick={() => setShowTokenLimitDialog(false)}>
+                Cancel
+              </Button>
+              <Button size="sm" onClick={handleUpdateTokenLimit} disabled={isUpdatingTokenLimit}>
+                {isUpdatingTokenLimit ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : null}
+                Update Limit
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -570,6 +671,7 @@ export function AIAgentHistoryPanel({
   const [newIsPublic, setNewIsPublic] = useState(false);
   const [selectedModelId, setSelectedModelId] = useState<string>("gpt-4o");
   const [customModelName, setCustomModelName] = useState("");
+  const [tokenLimit, setTokenLimit] = useState<number>(100000);
   const [topModel, setTopModel] = useState<AiModelRanking | null>(null);
 
   // Fetch top-ranked model for paper reviewing
@@ -627,6 +729,7 @@ export function AIAgentHistoryPanel({
         isPublic: newIsPublic,
         modelId: selectedModelId,
         customModelName: selectedModelId === 'custom' ? customModelName.trim() : undefined,
+        tokenLimit: tokenLimit,
       });
 
       // Update the list - the new one is active, so deactivate others
@@ -639,6 +742,7 @@ export function AIAgentHistoryPanel({
       setNewIsPublic(false);
       setSelectedModelId("gpt-4o");
       setCustomModelName("");
+      setTokenLimit(100000);
       setIsCreating(false);
       toast.success("History created");
     } catch (error) {
@@ -764,6 +868,27 @@ export function AIAgentHistoryPanel({
                   </p>
                 )}
               </div>
+              {/* Token Limit Selector */}
+              <div>
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">
+                  Token Limit (Spending Limit)
+                </label>
+                <select
+                  value={tokenLimit.toString()}
+                  onChange={(e) => setTokenLimit(parseInt(e.target.value))}
+                  className="w-full h-10 px-3 rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                >
+                  <option value="50000">50,000 tokens (~$0.50)</option>
+                  <option value="100000">100,000 tokens (~$1.00)</option>
+                  <option value="200000">200,000 tokens (~$2.00)</option>
+                  <option value="500000">500,000 tokens (~$5.00)</option>
+                  <option value="1000000">1,000,000 tokens (~$10.00)</option>
+                  <option value="0">Unlimited (no limit)</option>
+                </select>
+                <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+                  Set a spending limit. You can increase it later if needed.
+                </p>
+              </div>
               <div className="flex items-center gap-4">
                 <label className="flex items-center gap-2 text-sm cursor-pointer">
                   <input
@@ -789,6 +914,7 @@ export function AIAgentHistoryPanel({
                     setNewIsPublic(false);
                     setSelectedModelId("gpt-4o");
                     setCustomModelName("");
+                    setTokenLimit(100000);
                   }}
                 >
                   Cancel

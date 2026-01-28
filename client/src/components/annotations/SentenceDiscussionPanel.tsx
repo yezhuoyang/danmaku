@@ -10,6 +10,104 @@ import { Sentence, SentenceAnnotation, SentenceAnnotationReply, SentenceLabel } 
 import { getSentenceLabelName, getColorForSentenceLabel } from '@/lib/ai-document-annotator';
 import * as api from '@/lib/api';
 import { toast } from 'sonner';
+import ReactMarkdown from 'react-markdown';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
+import 'katex/dist/katex.min.css';
+
+// Markdown components for AI replies in sentence discussion
+const replyMarkdownComponents = {
+  p: ({ children }: { children?: React.ReactNode }) => (
+    <p className="text-xs leading-relaxed mb-1 last:mb-0">{children}</p>
+  ),
+  ul: ({ children }: { children?: React.ReactNode }) => (
+    <ul className="list-disc list-inside mb-1 space-y-0.5 text-xs">{children}</ul>
+  ),
+  ol: ({ children }: { children?: React.ReactNode }) => (
+    <ol className="list-decimal list-inside mb-1 space-y-0.5 text-xs">{children}</ol>
+  ),
+  li: ({ children }: { children?: React.ReactNode }) => (
+    <li className="text-xs">{children}</li>
+  ),
+  strong: ({ children }: { children?: React.ReactNode }) => (
+    <strong className="font-bold">{children}</strong>
+  ),
+  em: ({ children }: { children?: React.ReactNode }) => (
+    <em className="italic">{children}</em>
+  ),
+  code: ({ children, className }: { children?: React.ReactNode; className?: string }) => {
+    const isInline = !className;
+    if (isInline) {
+      return (
+        <code className="bg-slate-200 dark:bg-slate-600 px-0.5 rounded text-[10px] font-mono">
+          {children}
+        </code>
+      );
+    }
+    return (
+      <code className={`block bg-slate-200 dark:bg-slate-600 p-1 rounded text-[10px] font-mono overflow-x-auto mb-1 ${className}`}>
+        {children}
+      </code>
+    );
+  },
+  pre: ({ children }: { children?: React.ReactNode }) => (
+    <pre className="bg-slate-200 dark:bg-slate-600 p-1 rounded text-[10px] font-mono overflow-x-auto mb-1">
+      {children}
+    </pre>
+  ),
+  blockquote: ({ children }: { children?: React.ReactNode }) => (
+    <blockquote className="border-l-2 border-slate-400 dark:border-slate-500 pl-2 italic text-xs my-1">
+      {children}
+    </blockquote>
+  ),
+};
+
+// Markdown components for main AI annotations (larger text than replies)
+const annotationMarkdownComponents = {
+  p: ({ children }: { children?: React.ReactNode }) => (
+    <p className="text-sm leading-relaxed mb-2 last:mb-0">{children}</p>
+  ),
+  ul: ({ children }: { children?: React.ReactNode }) => (
+    <ul className="list-disc list-inside mb-2 space-y-1 text-sm">{children}</ul>
+  ),
+  ol: ({ children }: { children?: React.ReactNode }) => (
+    <ol className="list-decimal list-inside mb-2 space-y-1 text-sm">{children}</ol>
+  ),
+  li: ({ children }: { children?: React.ReactNode }) => (
+    <li className="text-sm">{children}</li>
+  ),
+  strong: ({ children }: { children?: React.ReactNode }) => (
+    <strong className="font-semibold">{children}</strong>
+  ),
+  em: ({ children }: { children?: React.ReactNode }) => (
+    <em className="italic">{children}</em>
+  ),
+  code: ({ children, className }: { children?: React.ReactNode; className?: string }) => {
+    const isInline = !className;
+    if (isInline) {
+      return (
+        <code className="bg-slate-200 dark:bg-slate-600 px-1 py-0.5 rounded text-xs font-mono">
+          {children}
+        </code>
+      );
+    }
+    return (
+      <code className={`block bg-slate-200 dark:bg-slate-600 p-2 rounded text-xs font-mono overflow-x-auto mb-2 ${className}`}>
+        {children}
+      </code>
+    );
+  },
+  pre: ({ children }: { children?: React.ReactNode }) => (
+    <pre className="bg-slate-200 dark:bg-slate-600 p-2 rounded text-xs font-mono overflow-x-auto mb-2">
+      {children}
+    </pre>
+  ),
+  blockquote: ({ children }: { children?: React.ReactNode }) => (
+    <blockquote className="border-l-2 border-slate-400 dark:border-slate-500 pl-3 italic text-sm my-2">
+      {children}
+    </blockquote>
+  ),
+};
 
 /**
  * Check if a comment contains an @AI mention
@@ -323,9 +421,22 @@ function DiscussionThread({ annotation, onAddReply, onDeleteAnnotation, onDelete
             </div>
           ) : (
             <>
-              <p className={`text-sm break-words overflow-wrap-anywhere ${isAI ? 'text-slate-700 dark:text-slate-200' : 'text-slate-600 dark:text-slate-300'}`}>
-                {annotation.text}
-              </p>
+              {/* Render AI annotations with markdown, others as plain text */}
+              {isAI ? (
+                <div className="text-sm text-slate-700 dark:text-slate-200 break-words [overflow-wrap:anywhere]">
+                  <ReactMarkdown
+                    remarkPlugins={[remarkMath]}
+                    rehypePlugins={[rehypeKatex]}
+                    components={annotationMarkdownComponents}
+                  >
+                    {annotation.text}
+                  </ReactMarkdown>
+                </div>
+              ) : (
+                <p className="text-sm break-words overflow-wrap-anywhere text-slate-600 dark:text-slate-300">
+                  {annotation.text}
+                </p>
+              )}
               <div className="flex items-center gap-2 mt-1">
                 {/* Like/Dislike buttons */}
                 <LikeButtons
@@ -477,9 +588,22 @@ function DiscussionThread({ annotation, onAddReply, onDeleteAnnotation, onDelete
                     </div>
                   ) : (
                     <>
-                      <p className="text-xs text-slate-600 dark:text-slate-400 break-words overflow-wrap-anywhere">
-                        {reply.text}
-                      </p>
+                      {/* Render AI replies with markdown, others as plain text */}
+                      {reply.userName === 'AI Assistant' ? (
+                        <div className="text-xs text-slate-600 dark:text-slate-400 break-words [overflow-wrap:anywhere]">
+                          <ReactMarkdown
+                            remarkPlugins={[remarkMath]}
+                            rehypePlugins={[rehypeKatex]}
+                            components={replyMarkdownComponents}
+                          >
+                            {reply.text}
+                          </ReactMarkdown>
+                        </div>
+                      ) : (
+                        <p className="text-xs text-slate-600 dark:text-slate-400 break-words overflow-wrap-anywhere">
+                          {reply.text}
+                        </p>
+                      )}
                       {/* Like/Dislike buttons for replies */}
                       <div className="mt-1">
                         <LikeButtons

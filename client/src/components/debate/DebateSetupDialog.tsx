@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   Dialog,
   DialogContent,
@@ -11,6 +11,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Badge } from "@/components/ui/badge";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Select,
   SelectContent,
@@ -21,8 +24,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { CreateDebateRequest, DEFAULT_AI_MODELS, AiModelProvider } from "@shared/types";
-import { Bot, Scale, Sparkles } from "lucide-react";
+import { CreateDebateRequest, DEFAULT_AI_MODELS, AiModelProvider, PaperWithStats } from "@shared/types";
+import { Bot, Scale, Sparkles, Search, FileText, X, BookOpen, Loader2 } from "lucide-react";
+import * as api from "../../lib/api";
 
 interface DebateSetupDialogProps {
   open: boolean;
@@ -70,6 +74,49 @@ export function DebateSetupDialog({
   const [negativeModel, setNegativeModel] = useState("claude-opus-4-5");
   const [judgeModel, setJudgeModel] = useState("gemini-3-pro");
 
+  // Paper selection
+  const [selectedPapers, setSelectedPapers] = useState<PaperWithStats[]>([]);
+  const [paperSearchQuery, setPaperSearchQuery] = useState("");
+  const [paperSearchResults, setPaperSearchResults] = useState<PaperWithStats[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [readPapersFirst, setReadPapersFirst] = useState(true);
+
+  // Debounced paper search
+  useEffect(() => {
+    if (!paperSearchQuery.trim()) {
+      setPaperSearchResults([]);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      setIsSearching(true);
+      try {
+        const result = await api.listPapers({ q: paperSearchQuery.trim(), limit: 10 });
+        // Filter out already selected papers
+        const filtered = result.papers.filter(
+          (p) => !selectedPapers.some((sp) => sp.id === p.id)
+        );
+        setPaperSearchResults(filtered);
+      } catch (error) {
+        console.error("Failed to search papers:", error);
+      } finally {
+        setIsSearching(false);
+      }
+    }, 300);
+
+    return () => clearTimeout(timer);
+  }, [paperSearchQuery, selectedPapers]);
+
+  const handleAddPaper = (paper: PaperWithStats) => {
+    setSelectedPapers([...selectedPapers, paper]);
+    setPaperSearchQuery("");
+    setPaperSearchResults([]);
+  };
+
+  const handleRemovePaper = (paperId: string) => {
+    setSelectedPapers(selectedPapers.filter((p) => p.id !== paperId));
+  };
+
   const handleSubmit = () => {
     if (!title.trim() || !topic.trim()) return;
 
@@ -80,9 +127,25 @@ export function DebateSetupDialog({
       negativeConfig: { modelId: negativeModel },
       judgeConfig: { modelId: judgeModel },
       backgroundKnowledge: backgroundKnowledge.trim() || undefined,
+      paperIds: selectedPapers.length > 0 ? selectedPapers.map((p) => p.id) : undefined,
+      readPapersFirst: selectedPapers.length > 0 ? readPapersFirst : undefined,
       maxTurns,
     });
   };
+
+  // Reset form when dialog closes
+  useEffect(() => {
+    if (!open) {
+      setTitle("");
+      setTopic("");
+      setBackgroundKnowledge("");
+      setMaxTurns(20);
+      setSelectedPapers([]);
+      setPaperSearchQuery("");
+      setPaperSearchResults([]);
+      setReadPapersFirst(true);
+    }
+  }, [open]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -102,7 +165,14 @@ export function DebateSetupDialog({
           <TabsList className="grid w-full grid-cols-3">
             <TabsTrigger value="topic">Topic</TabsTrigger>
             <TabsTrigger value="agents">Agents</TabsTrigger>
-            <TabsTrigger value="context">Context</TabsTrigger>
+            <TabsTrigger value="context">
+              Context
+              {selectedPapers.length > 0 && (
+                <Badge variant="secondary" className="ml-1.5 px-1.5 py-0 text-xs">
+                  {selectedPapers.length}
+                </Badge>
+              )}
+            </TabsTrigger>
           </TabsList>
 
           {/* Topic Tab */}
@@ -259,18 +329,113 @@ export function DebateSetupDialog({
                 placeholder="Provide any background context, definitions, or constraints for the debate..."
                 value={backgroundKnowledge}
                 onChange={(e) => setBackgroundKnowledge(e.target.value)}
-                rows={6}
+                rows={4}
               />
               <p className="text-xs text-muted-foreground">
                 This information will be provided to all agents as context.
               </p>
             </div>
 
-            <div className="p-4 rounded-lg border bg-muted/30">
-              <p className="text-sm text-muted-foreground">
-                <strong>Coming soon:</strong> Link papers from your library as reference material
-                for the debate agents.
-              </p>
+            {/* Paper Selection */}
+            <div className="space-y-3">
+              <Label className="flex items-center gap-2">
+                <FileText className="h-4 w-4" />
+                Reference Papers (Optional)
+              </Label>
+
+              {/* Paper Search */}
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                <Input
+                  placeholder="Search papers to add as references..."
+                  value={paperSearchQuery}
+                  onChange={(e) => setPaperSearchQuery(e.target.value)}
+                  className="pl-9"
+                />
+                {isSearching && (
+                  <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 animate-spin text-muted-foreground" />
+                )}
+              </div>
+
+              {/* Search Results */}
+              {paperSearchResults.length > 0 && (
+                <ScrollArea className="h-40 border rounded-md">
+                  <div className="p-2 space-y-1">
+                    {paperSearchResults.map((paper) => (
+                      <button
+                        key={paper.id}
+                        onClick={() => handleAddPaper(paper)}
+                        className="w-full text-left p-2 rounded-md hover:bg-muted transition-colors"
+                      >
+                        <p className="text-sm font-medium line-clamp-1">{paper.title}</p>
+                        <p className="text-xs text-muted-foreground line-clamp-1">
+                          {paper.authors?.slice(0, 3).join(", ")}
+                          {paper.authors && paper.authors.length > 3 && " et al."}
+                        </p>
+                      </button>
+                    ))}
+                  </div>
+                </ScrollArea>
+              )}
+
+              {/* Selected Papers */}
+              {selectedPapers.length > 0 && (
+                <div className="space-y-2">
+                  <Label className="text-sm">Selected Papers ({selectedPapers.length})</Label>
+                  <div className="space-y-2">
+                    {selectedPapers.map((paper) => (
+                      <div
+                        key={paper.id}
+                        className="flex items-center gap-2 p-2 rounded-md border bg-muted/50"
+                      >
+                        <FileText className="h-4 w-4 shrink-0 text-muted-foreground" />
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium truncate">{paper.title}</p>
+                          <p className="text-xs text-muted-foreground truncate">
+                            {paper.authors?.slice(0, 2).join(", ")}
+                            {paper.authors && paper.authors.length > 2 && " et al."}
+                          </p>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 shrink-0"
+                          onClick={() => handleRemovePaper(paper.id)}
+                        >
+                          <X className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Read Papers First Option */}
+                  <div className="flex items-center space-x-2 p-3 rounded-md border bg-blue-50 dark:bg-blue-950/30 border-blue-200 dark:border-blue-800">
+                    <Checkbox
+                      id="readPapersFirst"
+                      checked={readPapersFirst}
+                      onCheckedChange={(checked) => setReadPapersFirst(checked === true)}
+                    />
+                    <div className="flex-1">
+                      <label
+                        htmlFor="readPapersFirst"
+                        className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70 flex items-center gap-2"
+                      >
+                        <BookOpen className="h-4 w-4 text-blue-600" />
+                        Agents read papers before debating
+                      </label>
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Both agents will analyze the papers before the debate starts. This adds context but increases API usage.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {selectedPapers.length === 0 && !paperSearchQuery && (
+                <p className="text-xs text-muted-foreground">
+                  Add papers from your library as reference material for the debate agents.
+                </p>
+              )}
             </div>
           </TabsContent>
         </Tabs>

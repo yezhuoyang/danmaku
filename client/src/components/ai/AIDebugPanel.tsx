@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -13,7 +13,30 @@ import {
   MessageSquare,
   FileText,
   Clock,
+  CloudCog,
 } from "lucide-react";
+import type { BackgroundReadingJob, BackgroundDebugEntry } from "../../../../shared/types";
+
+// Convert background debug entries to AIDebugEntry format
+function convertBackgroundEntries(bgEntries: BackgroundDebugEntry[]): AIDebugEntry[] {
+  return bgEntries.map(entry => ({
+    id: entry.id,
+    timestamp: new Date(entry.timestamp),
+    type: entry.type,
+    pageNumber: entry.pageNumber,
+    prompt: entry.prompt,
+    response: entry.response,
+    error: entry.error,
+    sentenceCount: entry.sentenceCount,
+    figureTableCount: entry.figureTableCount,
+    duration: entry.duration,
+    tokens: entry.promptTokens !== undefined ? {
+      prompt: entry.promptTokens || 0,
+      completion: entry.completionTokens || 0,
+      total: (entry.promptTokens || 0) + (entry.completionTokens || 0),
+    } : undefined,
+  }));
+}
 
 export interface AIDebugEntry {
   id: string;
@@ -57,6 +80,7 @@ interface AIDebugPanelProps {
   isReading: boolean;
   progress: { current: number; total: number } | null;
   onClose: () => void;
+  backgroundJob?: BackgroundReadingJob | null;
 }
 
 export function AIDebugPanel({
@@ -65,17 +89,65 @@ export function AIDebugPanel({
   isReading,
   progress,
   onClose,
+  backgroundJob,
 }: AIDebugPanelProps) {
+  // Determine effective reading state (foreground or background)
+  const isBackgroundReading = backgroundJob && (backgroundJob.status === 'running' || backgroundJob.status === 'pending');
+  const effectiveIsReading = isReading || isBackgroundReading;
+  const effectiveProgress = isBackgroundReading
+    ? { current: backgroundJob.progress.currentPage, total: backgroundJob.progress.totalPages }
+    : progress;
+
+  // Calculate background job duration
+  const getBackgroundJobDuration = (): number => {
+    if (!backgroundJob?.timing?.startedAt) return 0;
+    const startTime = backgroundJob.timing.startedAt * 1000;
+    const endTime = backgroundJob.timing.completedAt
+      ? backgroundJob.timing.completedAt * 1000
+      : Date.now();
+    return endTime - startTime;
+  };
+
+  // Use background job stats when background reading is active (prioritize over empty foreground stats)
+  const effectiveStats: AIDebugStats = isBackgroundReading
+    ? {
+        totalTokensUsed: backgroundJob.tokens
+          ? (backgroundJob.tokens.promptTokens || 0) + (backgroundJob.tokens.completionTokens || 0)
+          : 0,
+        promptTokens: backgroundJob.tokens?.promptTokens || 0,
+        completionTokens: backgroundJob.tokens?.completionTokens || 0,
+        totalRounds: backgroundJob.progress.currentPage,
+        successfulRounds: backgroundJob.progress.currentPage,
+        failedRounds: 0,
+        totalDuration: getBackgroundJobDuration(),
+        averageRoundDuration: backgroundJob.progress.currentPage > 0
+          ? getBackgroundJobDuration() / backgroundJob.progress.currentPage
+          : 0,
+      }
+    : stats;
   const [expandedEntries, setExpandedEntries] = useState<Set<string>>(new Set());
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  // Combine foreground entries with background entries
+  const effectiveEntries = useMemo(() => {
+    // Prefer foreground entries if available
+    if (entries.length > 0) {
+      return entries;
+    }
+    // Use background entries if available (show even after job completed)
+    if (backgroundJob?.debugEntries && backgroundJob.debugEntries.length > 0) {
+      return convertBackgroundEntries(backgroundJob.debugEntries);
+    }
+    return [];
+  }, [entries, backgroundJob?.debugEntries]);
+
   // Auto-scroll to bottom when new entries come in
   useEffect(() => {
-    if (scrollRef.current && isReading) {
+    if (scrollRef.current && effectiveIsReading) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [entries.length, isReading]);
+  }, [effectiveEntries.length, effectiveIsReading]);
 
   const toggleEntry = (id: string) => {
     setExpandedEntries(prev => {
@@ -113,10 +185,18 @@ export function AIDebugPanel({
           <div className="flex items-center gap-2">
             <Bug className="w-5 h-5 text-amber-400" />
             <h2 className="font-semibold text-white">AI Debug Console</h2>
-            {isReading && (
-              <div className="flex items-center gap-1.5 ml-2 px-2 py-0.5 bg-amber-500/20 rounded-full">
-                <Loader2 className="w-3 h-3 animate-spin text-amber-400" />
-                <span className="text-xs text-amber-300">Reading...</span>
+            {effectiveIsReading && (
+              <div className={`flex items-center gap-1.5 ml-2 px-2 py-0.5 rounded-full ${
+                isBackgroundReading ? 'bg-blue-500/20' : 'bg-amber-500/20'
+              }`}>
+                {isBackgroundReading ? (
+                  <CloudCog className="w-3 h-3 animate-pulse text-blue-400" />
+                ) : (
+                  <Loader2 className="w-3 h-3 animate-spin text-amber-400" />
+                )}
+                <span className={`text-xs ${isBackgroundReading ? 'text-blue-300' : 'text-amber-300'}`}>
+                  {isBackgroundReading ? 'Background...' : 'Reading...'}
+                </span>
               </div>
             )}
           </div>
@@ -131,16 +211,20 @@ export function AIDebugPanel({
         </div>
 
         {/* Progress bar */}
-        {progress && (
+        {effectiveProgress && (
           <div className="mt-3">
             <div className="flex items-center justify-between text-xs text-slate-400 mb-1">
-              <span>Page {progress.current} of {progress.total}</span>
-              <span>{Math.round((progress.current / progress.total) * 100)}%</span>
+              <span>Page {effectiveProgress.current} of {effectiveProgress.total}</span>
+              <span>{Math.round((effectiveProgress.current / effectiveProgress.total) * 100)}%</span>
             </div>
             <div className="h-1.5 bg-slate-700 rounded-full overflow-hidden">
               <div
-                className="h-full bg-gradient-to-r from-amber-500 to-orange-500 transition-all duration-300"
-                style={{ width: `${(progress.current / progress.total) * 100}%` }}
+                className={`h-full transition-all duration-300 ${
+                  isBackgroundReading
+                    ? 'bg-gradient-to-r from-blue-500 to-cyan-500'
+                    : 'bg-gradient-to-r from-amber-500 to-orange-500'
+                }`}
+                style={{ width: `${(effectiveProgress.current / effectiveProgress.total) * 100}%` }}
               />
             </div>
           </div>
@@ -155,9 +239,9 @@ export function AIDebugPanel({
               <Zap className="w-3.5 h-3.5 text-amber-400" />
               <span className="text-[10px] text-slate-400 uppercase tracking-wider">Tokens</span>
             </div>
-            <div className="text-lg font-bold text-white">{formatTokens(stats.totalTokensUsed)}</div>
+            <div className="text-lg font-bold text-white">{formatTokens(effectiveStats.totalTokensUsed)}</div>
             <div className="text-[10px] text-slate-500">
-              {formatTokens(stats.promptTokens)} in / {formatTokens(stats.completionTokens)} out
+              {formatTokens(effectiveStats.promptTokens)} in / {formatTokens(effectiveStats.completionTokens)} out
             </div>
           </div>
 
@@ -166,9 +250,9 @@ export function AIDebugPanel({
               <MessageSquare className="w-3.5 h-3.5 text-blue-400" />
               <span className="text-[10px] text-slate-400 uppercase tracking-wider">Rounds</span>
             </div>
-            <div className="text-lg font-bold text-white">{stats.totalRounds}</div>
+            <div className="text-lg font-bold text-white">{effectiveStats.totalRounds}</div>
             <div className="text-[10px] text-slate-500">
-              <span className="text-green-400">{stats.successfulRounds}</span> ok / <span className="text-red-400">{stats.failedRounds}</span> fail
+              <span className="text-green-400">{effectiveStats.successfulRounds}</span> ok / <span className="text-red-400">{effectiveStats.failedRounds}</span> fail
             </div>
           </div>
 
@@ -177,9 +261,9 @@ export function AIDebugPanel({
               <Clock className="w-3.5 h-3.5 text-purple-400" />
               <span className="text-[10px] text-slate-400 uppercase tracking-wider">Time</span>
             </div>
-            <div className="text-lg font-bold text-white">{formatDuration(stats.totalDuration)}</div>
+            <div className="text-lg font-bold text-white">{formatDuration(effectiveStats.totalDuration)}</div>
             <div className="text-[10px] text-slate-500">
-              ~{formatDuration(stats.averageRoundDuration)}/page
+              ~{formatDuration(effectiveStats.averageRoundDuration)}/page
             </div>
           </div>
 
@@ -189,7 +273,7 @@ export function AIDebugPanel({
               <span className="text-[10px] text-slate-400 uppercase tracking-wider">Analyzed</span>
             </div>
             <div className="text-lg font-bold text-white">
-              {entries.filter(e => e.type === 'response').reduce((sum, e) => sum + (e.sentenceCount || 0), 0)}
+              {effectiveEntries.filter(e => e.type === 'response').reduce((sum, e) => sum + (e.sentenceCount || 0), 0)}
             </div>
             <div className="text-[10px] text-slate-500">sentences</div>
           </div>
@@ -199,14 +283,29 @@ export function AIDebugPanel({
       {/* Entries List */}
       <ScrollArea className="flex-1 min-h-0" ref={scrollRef}>
         <div className="p-4 space-y-3">
-          {entries.length === 0 ? (
-            <div className="text-center py-12 text-slate-500">
-              <Bug className="w-12 h-12 mx-auto mb-3 opacity-30" />
-              <p className="text-sm">No debug entries yet</p>
-              <p className="text-xs mt-1">Click "Let Agent Read" to start</p>
-            </div>
+          {effectiveEntries.length === 0 ? (
+            effectiveIsReading ? (
+              <div className="text-center py-12 text-slate-500">
+                <CloudCog className="w-12 h-12 mx-auto mb-3 text-blue-400 animate-pulse" />
+                <p className="text-sm text-blue-300">
+                  {isBackgroundReading ? 'Background' : 'Foreground'} Reading in Progress
+                </p>
+                <p className="text-xs mt-1 text-slate-400">
+                  Page {effectiveProgress?.current || 0} of {effectiveProgress?.total || '?'}
+                </p>
+                <p className="text-xs mt-2 text-slate-500">
+                  Waiting for debug entries...
+                </p>
+              </div>
+            ) : (
+              <div className="text-center py-12 text-slate-500">
+                <Bug className="w-12 h-12 mx-auto mb-3 opacity-30" />
+                <p className="text-sm">No debug entries yet</p>
+                <p className="text-xs mt-1">Click "Let Agent Read" to start</p>
+              </div>
+            )
           ) : (
-            entries.map((entry) => (
+            effectiveEntries.map((entry) => (
               <DebugEntry
                 key={entry.id}
                 entry={entry}

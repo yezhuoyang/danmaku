@@ -51,6 +51,11 @@ import {
   HelpCircle,
   FlaskConical,
   Target,
+  Upload,
+  Settings,
+  GitFork,
+  Lock,
+  Globe,
 } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { LikeButtons } from "@/components/ui/LikeButtons";
@@ -61,11 +66,21 @@ import { AIAgentHistoryPanel } from "@/components/AIAgentHistoryPanel";
 import { NecessaryBackgroundPanel } from "@/components/NecessaryBackgroundPanel";
 import { QuizSection, OpenQuestionsSection, ResearchIdeasSection } from "@/components/insights";
 import { UserReviewPanel } from "@/components/UserReviewPanel";
+import { AIPaperDiscoveryDialog } from "@/components/AIPaperDiscoveryDialog";
+import { PaperAvatarSection } from "@/components/PaperAvatarSection";
+import { PaperSettingsDialog } from "@/components/PaperSettingsDialog";
+import { StartBackgroundReadingButton } from "@/components/StartBackgroundReadingButton";
+import { BackgroundReadingManager } from "@/components/BackgroundReadingManager";
+import { FigureTablePanel } from "@/components/FigureTablePanel";
 import * as api from "../lib/api";
-import type { PaperWithStats, Annotation, AiAnalysis, AiReview, AiAgentHistory, NecessaryBackground, UserReview, TopContributor, AiModelRanking } from "../../../shared/types";
+import type { PaperWithStats, Annotation, AiAnalysis, AiReview, AiAgentHistory, NecessaryBackground, UserReview, TopContributor, AiModelRanking, FigureTableRegion } from "../../../shared/types";
 import { DEFAULT_AI_MODELS } from "../../../shared/types";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { toast } from "sonner";
+import ReactMarkdown from "react-markdown";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import "katex/dist/katex.min.css";
 
 // Speed options for danmaku flow
 const SPEED_OPTIONS = [
@@ -679,12 +694,17 @@ export default function PaperDetail() {
   const [modelRankings, setModelRankings] = useState<AiModelRanking[]>([]);
   const [loadingContributors, setLoadingContributors] = useState(true);
   const [loadingRankings, setLoadingRankings] = useState(true);
+  const [figureTableRegions, setFigureTableRegions] = useState<FigureTableRegion[]>([]);
 
   // Tag editing state
   const [isEditingTags, setIsEditingTags] = useState(false);
   const [editingTags, setEditingTags] = useState<string[]>([]);
   const [newTagInput, setNewTagInput] = useState('');
   const [isSavingTags, setIsSavingTags] = useState(false);
+
+  // Privacy settings state
+  const [showSettingsDialog, setShowSettingsDialog] = useState(false);
+  const [isForking, setIsForking] = useState(false);
 
   // Check if current user is the paper uploader
   const isUploader = user && paper?.addedBy === user.id;
@@ -698,7 +718,7 @@ export default function PaperDetail() {
     const fetchData = async () => {
       setIsLoading(true);
       try {
-        const [paperResult, annotationsResult, analysisResult, reviewsResult, historiesResult, backgroundsResult, userReviewsResult] = await Promise.all([
+        const [paperResult, annotationsResult, analysisResult, reviewsResult, historiesResult, backgroundsResult, userReviewsResult, regionsResult] = await Promise.all([
           api.getPaper(paperId),
           api.getPaperAnnotations(paperId),
           api.getAiAnalysis(paperId),
@@ -706,6 +726,7 @@ export default function PaperDetail() {
           api.getAiAgentHistories(paperId),
           api.getNecessaryBackgrounds(paperId),
           api.getUserReviews(paperId),
+          api.getFigureTableRegions(paperId),
         ]);
         setPaper(paperResult.paper);
         setAnnotations(annotationsResult.annotations);
@@ -714,6 +735,7 @@ export default function PaperDetail() {
         setAiAgentHistories(historiesResult.histories);
         setNecessaryBackgrounds(backgroundsResult.backgrounds);
         setUserReviews(userReviewsResult.reviews);
+        setFigureTableRegions(regionsResult.regions);
       } catch (error) {
         console.error("Failed to fetch paper:", error);
         toast.error("Failed to load paper");
@@ -919,6 +941,30 @@ export default function PaperDetail() {
       console.error("Failed to update collection:", error);
       toast.error("Failed to update collection");
     }
+  };
+
+  const handleForkPaper = async () => {
+    if (!paperId || !user) {
+      toast.error("Please login to fork papers");
+      return;
+    }
+
+    setIsForking(true);
+    try {
+      const result = await api.forkPaper(paperId, 'private');
+      toast.success("Paper forked! You now have your own private copy.");
+      // Navigate to the forked paper
+      window.location.href = `/paper/${result.paper.id}`;
+    } catch (error: any) {
+      console.error("Failed to fork paper:", error);
+      toast.error(error?.message || "Failed to fork paper");
+    } finally {
+      setIsForking(false);
+    }
+  };
+
+  const handlePaperUpdated = (updatedPaper: PaperWithStats) => {
+    setPaper(updatedPaper);
   };
 
   // Tag editing handlers
@@ -1193,10 +1239,35 @@ export default function PaperDetail() {
           <main className="max-w-4xl flex-1 min-w-0">
             {/* Paper Header */}
         <div className="mb-6" id="paper-header">
-          <h1 className="text-3xl font-bold text-slate-900 dark:text-white mb-2">
-            {paper.title}
-          </h1>
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mb-3">
+          {/* Paper Avatar */}
+          <PaperAvatarSection
+            paperId={paper.id}
+            paper={paper}
+            activeSession={activeSession}
+            isUploader={isUploader}
+            currentUserId={user?.id}
+            onAvatarChange={() => {
+              // Refresh paper data to get updated avatar URL
+              api.getPaper(paper.id).then(({ paper: updatedPaper }) => {
+                // This will trigger a re-render with the new avatar
+                setPaper(updatedPaper);
+              });
+            }}
+          />
+
+          <div className="flex items-start gap-3 mb-2">
+            <h1 className="text-3xl font-bold text-slate-900 dark:text-white flex-1">
+              {paper.title}
+            </h1>
+            {/* Visibility badge */}
+            {paper.visibility === 'private' && (
+              <Badge variant="secondary" className="shrink-0 gap-1 bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200">
+                <Lock className="h-3 w-3" />
+                Private
+              </Badge>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 mb-2">
             <p className="text-base text-slate-600 dark:text-slate-300">{authors}</p>
             {paper.arxivId && (
               <Badge variant="outline" className="gap-1 text-xs">
@@ -1211,7 +1282,31 @@ export default function PaperDetail() {
                 </a>
               </Badge>
             )}
+            {/* Forked from indicator */}
+            {paper.isForked && paper.originalPaperTitle && (
+              <Badge variant="outline" className="gap-1 text-xs bg-slate-100 dark:bg-slate-800">
+                <GitFork className="h-3 w-3" />
+                Forked
+              </Badge>
+            )}
           </div>
+          {/* Uploader info */}
+          {paper.uploaderName && paper.addedBy && (
+            <div className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400 mb-3">
+              <Upload className="h-4 w-4" />
+              <span>Uploaded by</span>
+              <Link
+                href={`/profile/${paper.addedBy}`}
+                className="flex items-center gap-1.5 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors"
+              >
+                <Avatar className="h-5 w-5">
+                  <AvatarImage src={paper.uploaderAvatar} alt={paper.uploaderName} />
+                  <AvatarFallback className="text-[10px]">{paper.uploaderName.slice(0, 1)}</AvatarFallback>
+                </Avatar>
+                <span className="font-medium text-slate-700 dark:text-slate-200">{paper.uploaderName}</span>
+              </Link>
+            </div>
+          )}
           {/* Compact Stats - inline with header */}
           <div className="flex flex-wrap items-center gap-3 text-sm">
             <span className="flex items-center gap-1.5 px-2 py-1 bg-slate-100 dark:bg-slate-800 rounded-full">
@@ -1340,17 +1435,16 @@ export default function PaperDetail() {
 {/* Enter Reading Mode */}
         <Card className="mb-8 bg-gradient-to-r from-indigo-500 to-purple-600 border-0">
           <CardContent className="p-6">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
               <div className="text-white">
                 <h3 className="text-xl font-semibold mb-1">Ready to read?</h3>
                 <p className="text-indigo-100">
                   Enter reading mode to view the PDF and add annotations
                 </p>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2 flex-wrap">
                 {user && (
                   <Button
-                    size="lg"
                     variant={isCollected ? "default" : "outline"}
                     className={isCollected
                       ? "bg-white/20 hover:bg-white/30 text-white border-white/30"
@@ -1360,20 +1454,61 @@ export default function PaperDetail() {
                   >
                     {isCollected ? (
                       <>
-                        <BookmarkCheck className="h-5 w-5 mr-2" />
+                        <BookmarkCheck className="h-4 w-4 mr-1.5" />
                         Collected
                       </>
                     ) : (
                       <>
-                        <Bookmark className="h-5 w-5 mr-2" />
+                        <Bookmark className="h-4 w-4 mr-1.5" />
                         Collect
                       </>
                     )}
                   </Button>
                 )}
-                <Button size="lg" variant="secondary" asChild>
+                <AIPaperDiscoveryDialog
+                  relatedToPaperId={paper.id}
+                  relatedToPaperTitle={paper.title}
+                />
+                {/* Fork button - available to logged-in users who are not the owner */}
+                {user && !isUploader && (
+                  <Button
+                    variant="outline"
+                    className="bg-transparent border-white/50 text-white hover:bg-white/10"
+                    onClick={handleForkPaper}
+                    disabled={isForking}
+                  >
+                    {isForking ? (
+                      <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                    ) : (
+                      <GitFork className="h-4 w-4 mr-1.5" />
+                    )}
+                    Fork
+                  </Button>
+                )}
+                {/* Settings button - only for paper owner */}
+                {isUploader && (
+                  <Button
+                    variant="outline"
+                    className="bg-transparent border-white/50 text-white hover:bg-white/10"
+                    onClick={() => setShowSettingsDialog(true)}
+                  >
+                    <Settings className="h-4 w-4 mr-1.5" />
+                    Settings
+                  </Button>
+                )}
+                {/* Background reading button - for logged in users with arxiv papers */}
+                {user && paper.arxivId && (
+                  <StartBackgroundReadingButton
+                    paperId={paper.id}
+                    paperTitle={paper.title}
+                    arxivId={paper.arxivId}
+                    variant="outline"
+                    className="bg-transparent border-white/50 text-white hover:bg-white/10"
+                  />
+                )}
+                <Button variant="secondary" asChild>
                   <Link href={`/paper/${paper.id}/read`}>
-                    <BookOpen className="h-5 w-5 mr-2" />
+                    <BookOpen className="h-4 w-4 mr-1.5" />
                     Enter Reading Mode
                   </Link>
                 </Button>
@@ -1382,6 +1517,16 @@ export default function PaperDetail() {
           </CardContent>
         </Card>
 
+        {/* Paper Settings Dialog */}
+        {paper && (
+          <PaperSettingsDialog
+            open={showSettingsDialog}
+            onOpenChange={setShowSettingsDialog}
+            paper={paper}
+            onPaperUpdated={handlePaperUpdated}
+          />
+        )}
+
         {/* Abstract */}
         {paper.abstract && (
           <Card className="mb-8" id="abstract-section">
@@ -1389,9 +1534,17 @@ export default function PaperDetail() {
               <CardTitle>Abstract</CardTitle>
             </CardHeader>
             <CardContent>
-              <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
-                {paper.abstract}
-              </p>
+              <div className="text-slate-600 dark:text-slate-300 leading-relaxed prose prose-slate dark:prose-invert max-w-none">
+                <ReactMarkdown
+                  remarkPlugins={[remarkMath]}
+                  rehypePlugins={[rehypeKatex]}
+                  components={{
+                    p: ({ children }) => <p className="mb-0">{children}</p>,
+                  }}
+                >
+                  {paper.abstract}
+                </ReactMarkdown>
+              </div>
             </CardContent>
           </Card>
         )}
@@ -1418,6 +1571,14 @@ export default function PaperDetail() {
             </CardContent>
           </Card>
         )}
+
+        {/* Figures & Tables Section */}
+        <div className="mb-8" id="figures-tables-section">
+          <FigureTablePanel
+            paperId={paper.id}
+            regions={figureTableRegions}
+          />
+        </div>
 
         {/* Background Knowledge Section - moved above User Reviews */}
         <div className="mb-8" id="background-section">
@@ -1565,6 +1726,25 @@ export default function PaperDetail() {
                   );
                 }}
               />
+
+              {/* Background Reading Jobs - compact view */}
+              {user && (
+                <BackgroundReadingManager
+                  paperId={paper.id}
+                  compact={true}
+                  className="mt-4"
+                  onJobCompleted={async (job) => {
+                    // Refetch AI agent histories to get updated sentence analysis
+                    try {
+                      const historiesResult = await api.getAiAgentHistories(paper.id);
+                      setAiAgentHistories(historiesResult.histories);
+                      toast.success(`Background reading completed for "${job.paperTitle || 'paper'}"! AI reviews are now available.`);
+                    } catch (error) {
+                      console.error("Failed to refresh AI sessions:", error);
+                    }
+                  }}
+                />
+              )}
             </div>
           </aside>
         </div>

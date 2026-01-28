@@ -17,6 +17,7 @@ import MyAnnotations from "./pages/MyAnnotations";
 import MyComments from "./pages/MyComments";
 import MyReviews from "./pages/MyReviews";
 import MyAiSessions from "./pages/MyAiSessions";
+import MyBackgroundJobs from "./pages/MyBackgroundJobs";
 import About from "./pages/About";
 import Admin from "./pages/Admin";
 import ModelRankings from "./pages/ModelRankings";
@@ -26,6 +27,14 @@ import ChallengeProblems from "./pages/ChallengeProblems";
 import ChallengeProblemDetail from "./pages/ChallengeProblemDetail";
 import Debates from "./pages/Debates";
 import DebateView from "./pages/DebateView";
+import AgentLego from "./pages/AgentLego";
+import AgentLegoDemo from "./pages/AgentLegoDemo";
+import CodeExecutionDemo from "./pages/CodeExecutionDemo";
+import Feedback from "./pages/Feedback";
+import PaperGroups from "./pages/PaperGroups";
+import PaperGroupDetail from "./pages/PaperGroupDetail";
+import OpenQuestions from "./pages/OpenQuestions";
+import ResearchIdeas from "./pages/ResearchIdeas";
 
 function Router() {
   return (
@@ -42,6 +51,7 @@ function Router() {
       <Route path="/my-comments" component={MyComments} />
       <Route path="/my-reviews" component={MyReviews} />
       <Route path="/my-ai-sessions" component={MyAiSessions} />
+      <Route path="/my-background-jobs" component={MyBackgroundJobs} />
       <Route path="/about" component={About} />
       <Route path="/admin" component={Admin} />
       <Route path="/model-rankings" component={ModelRankings} />
@@ -50,8 +60,16 @@ function Router() {
       <Route path="/notifications" component={Notifications} />
       <Route path="/challenge-problems" component={ChallengeProblems} />
       <Route path="/challenge/:id" component={ChallengeProblemDetail} />
+      <Route path="/open-questions" component={OpenQuestions} />
+      <Route path="/research-ideas" component={ResearchIdeas} />
       <Route path="/debates" component={Debates} />
       <Route path="/debate/:id" component={DebateView} />
+      <Route path="/agent-lego" component={AgentLego} />
+      <Route path="/agent-lego/demo" component={AgentLegoDemo} />
+      <Route path="/agent-lego/code-demo" component={CodeExecutionDemo} />
+      <Route path="/feedback" component={Feedback} />
+      <Route path="/paper-groups" component={PaperGroups} />
+      <Route path="/paper-groups/:id" component={PaperGroupDetail} />
       <Route path="/404" component={NotFound} />
       <Route component={NotFound} />
     </Switch>

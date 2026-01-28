@@ -26,6 +26,21 @@ import {
   ChevronRight,
   Lightbulb,
   Scale,
+  Blocks,
+  BookOpen,
+  Code,
+  Sparkles,
+  Target,
+  ArrowRight,
+  ArrowDown,
+  Combine,
+  Gavel,
+  Swords,
+  Calculator,
+  Crown,
+  Search as SearchIcon,
+  HelpCircle,
+  Brain,
 } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { LikeButtons } from "@/components/ui/LikeButtons";
@@ -39,8 +54,9 @@ import {
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@/contexts/AuthContext";
 import { NotificationBell } from "@/components/NotificationBell";
+import { AIResearchAssistantDialog } from "@/components/AIResearchAssistantDialog";
 import * as api from "@/lib/api";
-import type { SiteStats, RecentDanmaku } from "@/lib/api";
+import type { SiteStats, RecentDanmaku, InsightsStatsResponse } from "@/lib/api";
 import type { AiModelRanking, AiModelProvider, TopContributor } from "../../../shared/types";
 import { DEFAULT_AI_MODELS } from "../../../shared/types";
 
@@ -183,9 +199,8 @@ export default function Home() {
   const { user, isLoading: authLoading, logout } = useAuth();
   const [, setLocation] = useLocation();
   const [searchQuery, setSearchQuery] = useState("");
-  const [challengeSearchQuery, setChallengeSearchQuery] = useState("");
-  const [debateSearchQuery, setDebateSearchQuery] = useState("");
   const [stats, setStats] = useState<SiteStats | null>(null);
+  const [insightsStats, setInsightsStats] = useState<InsightsStatsResponse | null>(null);
   const [recentDanmaku, setRecentDanmaku] = useState<RecentDanmaku[]>([]);
   const [modelRankings, setModelRankings] = useState<AiModelRanking[]>([]);
   const [topContributors, setTopContributors] = useState<TopContributor[]>([]);
@@ -200,6 +215,11 @@ export default function Home() {
       .then(setStats)
       .catch(console.error)
       .finally(() => setLoadingStats(false));
+
+    // Load insights stats (open questions & research ideas)
+    api.getInsightsStats()
+      .then(setInsightsStats)
+      .catch(console.error);
 
     // Load recent danmaku
     api.getRecentDanmaku()
@@ -257,24 +277,6 @@ export default function Home() {
     }
   };
 
-  const handleChallengeSearch = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (challengeSearchQuery.trim()) {
-      setLocation(`/challenge-problems?q=${encodeURIComponent(challengeSearchQuery.trim())}`);
-    } else {
-      setLocation("/challenge-problems");
-    }
-  };
-
-  const handleDebateSearch = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (debateSearchQuery.trim()) {
-      setLocation(`/debates?q=${encodeURIComponent(debateSearchQuery.trim())}`);
-    } else {
-      setLocation("/debates");
-    }
-  };
-
   const formatNumber = (num: number) => {
     if (num >= 1000000) return (num / 1000000).toFixed(1) + "M";
     if (num >= 1000) return (num / 1000).toFixed(1) + "K";
@@ -309,9 +311,29 @@ export default function Home() {
             <Lightbulb className="w-4 h-4" />
             Challenges
           </Link>
+          <Link href="/open-questions" className="text-sm text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 transition-colors flex items-center gap-1">
+            <HelpCircle className="w-4 h-4" />
+            Open Questions
+          </Link>
+          <Link href="/research-ideas" className="text-sm text-slate-600 dark:text-slate-300 hover:text-yellow-600 dark:hover:text-yellow-400 transition-colors flex items-center gap-1">
+            <Brain className="w-4 h-4" />
+            Research Ideas
+          </Link>
           <Link href="/debates" className="text-sm text-slate-600 dark:text-slate-300 hover:text-purple-600 dark:hover:text-purple-400 transition-colors flex items-center gap-1">
             <Scale className="w-4 h-4" />
             AI Debates
+          </Link>
+          <Link href="/paper-groups" className="text-sm text-slate-600 dark:text-slate-300 hover:text-blue-600 dark:hover:text-blue-400 transition-colors flex items-center gap-1">
+            <FileText className="w-4 h-4" />
+            Paper Groups
+          </Link>
+          <Link href="/agent-lego" className="text-sm text-slate-600 dark:text-slate-300 hover:text-green-600 dark:hover:text-green-400 transition-colors flex items-center gap-1">
+            <Blocks className="w-4 h-4" />
+            Agent Lego
+          </Link>
+          <Link href="/feedback" className="text-sm text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors flex items-center gap-1">
+            <MessageSquare className="w-4 h-4" />
+            Feedback
           </Link>
           <Link href="/about" className="text-sm text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors flex items-center gap-1">
             <Info className="w-4 h-4" />
@@ -342,6 +364,12 @@ export default function Home() {
                     <DropdownMenuItem>
                       <User className="h-4 w-4 mr-2" />
                       Profile
+                    </DropdownMenuItem>
+                  </Link>
+                  <Link href="/my-background-jobs">
+                    <DropdownMenuItem>
+                      <BookOpen className="h-4 w-4 mr-2" />
+                      Background Reading
                     </DropdownMenuItem>
                   </Link>
                   {user.isAdmin && (
@@ -472,11 +500,16 @@ export default function Home() {
             </h1>
 
             {/* Slogan */}
-            <p className="text-lg md:text-xl text-slate-600 dark:text-slate-300 mb-8 text-center max-w-lg">
-              Reading Faster, Reviewing Better—With{" "}
+            <p className="text-lg md:text-xl text-slate-600 dark:text-slate-300 mb-2 text-center max-w-lg">
+              Read paper and do research with{" "}
               <span className="text-transparent bg-clip-text bg-gradient-to-r from-indigo-600 to-purple-600 font-semibold">
-                Collaboration and AI Agents
+                AI Agents
               </span>
+            </p>
+
+            {/* UCLA Attribution */}
+            <p className="text-sm text-slate-500 dark:text-slate-400 mb-8 text-center">
+              Since 2026, a non-profit project starting from UCLA
             </p>
 
             {/* Search Box */}
@@ -487,92 +520,47 @@ export default function Home() {
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search papers by title, author, or arXiv ID..."
+                  placeholder="Search papers, debates, challenges, paper groups..."
                   className="w-full h-14 pl-12 pr-4 text-lg rounded-full border-2 border-slate-200 dark:border-slate-700 focus:border-indigo-500 dark:focus:border-indigo-500 shadow-sm hover:shadow-md focus:shadow-lg transition-all"
                 />
               </div>
             </form>
 
             {/* Action Buttons */}
-            <div className="flex gap-3 mb-8">
+            <div className="flex flex-wrap gap-3 justify-center">
               <Button
                 type="submit"
                 onClick={handleSearch}
                 className="px-6"
               >
-                Search Papers
+                Search
               </Button>
               <Button variant="outline" asChild className="px-6">
                 <Link href="/browse">Browse All</Link>
               </Button>
-            </div>
-
-            {/* Research Challenges Search */}
-            <h2 className="text-xl font-semibold text-slate-700 dark:text-slate-300 mb-2 text-center flex items-center justify-center gap-2">
-              <Lightbulb className="w-5 h-5 text-purple-500" />
-              Research Challenge Problems
-            </h2>
-            <p className="text-sm text-slate-500 dark:text-slate-400 mb-3 text-center">
-              What is the research problem you want to solve?
-            </p>
-            <form onSubmit={handleChallengeSearch} className="w-full max-w-2xl mb-4">
-              <div className="relative group">
-                <Lightbulb className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 group-focus-within:text-purple-500 transition-colors" />
-                <Input
-                  type="text"
-                  value={challengeSearchQuery}
-                  onChange={(e) => setChallengeSearchQuery(e.target.value)}
-                  placeholder="Search research challenges and open questions..."
-                  className="w-full h-12 pl-12 pr-4 text-base rounded-full border-2 border-slate-200 dark:border-slate-700 focus:border-purple-500 dark:focus:border-purple-500 shadow-sm hover:shadow-md focus:shadow-lg transition-all"
-                />
-              </div>
-            </form>
-            <div className="flex gap-3 mb-10">
-              <Button
-                variant="outline"
-                onClick={handleChallengeSearch}
-                className="px-6"
-              >
-                <Lightbulb className="w-4 h-4 mr-2" />
-                Search Challenges
+              <Button variant="outline" asChild className="px-6 border-blue-200 hover:bg-blue-50 dark:border-blue-800 dark:hover:bg-blue-950">
+                <Link href="/open-questions" className="flex items-center gap-2">
+                  <HelpCircle className="w-4 h-4 text-blue-500" />
+                  Open Questions
+                  {insightsStats && insightsStats.totalOpenQuestions > 0 && (
+                    <span className="bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 text-xs px-1.5 py-0.5 rounded-full">
+                      {insightsStats.totalOpenQuestions}
+                    </span>
+                  )}
+                </Link>
               </Button>
-              <Button variant="ghost" asChild className="px-6">
-                <Link href="/challenge-problems">Browse All Challenges</Link>
+              <Button variant="outline" asChild className="px-6 border-yellow-200 hover:bg-yellow-50 dark:border-yellow-800 dark:hover:bg-yellow-950">
+                <Link href="/research-ideas" className="flex items-center gap-2">
+                  <Brain className="w-4 h-4 text-yellow-500" />
+                  Research Ideas
+                  {insightsStats && insightsStats.totalResearchIdeas > 0 && (
+                    <span className="bg-yellow-100 dark:bg-yellow-900 text-yellow-700 dark:text-yellow-300 text-xs px-1.5 py-0.5 rounded-full">
+                      {insightsStats.totalResearchIdeas}
+                    </span>
+                  )}
+                </Link>
               </Button>
-            </div>
-
-            {/* AI Debates Search */}
-            <h2 className="text-xl font-semibold text-slate-700 dark:text-slate-300 mb-2 text-center flex items-center justify-center gap-2">
-              <Scale className="w-5 h-5 text-indigo-500" />
-              AI Research Debates
-            </h2>
-            <p className="text-sm text-slate-500 dark:text-slate-400 mb-3 text-center">
-              Watch AI agents debate research topics and ideas
-            </p>
-            <form onSubmit={handleDebateSearch} className="w-full max-w-2xl mb-4">
-              <div className="relative group">
-                <Scale className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400 group-focus-within:text-indigo-500 transition-colors" />
-                <Input
-                  type="text"
-                  value={debateSearchQuery}
-                  onChange={(e) => setDebateSearchQuery(e.target.value)}
-                  placeholder="Search AI debates by topic..."
-                  className="w-full h-12 pl-12 pr-4 text-base rounded-full border-2 border-slate-200 dark:border-slate-700 focus:border-indigo-500 dark:focus:border-indigo-500 shadow-sm hover:shadow-md focus:shadow-lg transition-all"
-                />
-              </div>
-            </form>
-            <div className="flex gap-3">
-              <Button
-                variant="outline"
-                onClick={handleDebateSearch}
-                className="px-6"
-              >
-                <Scale className="w-4 h-4 mr-2" />
-                Search Debates
-              </Button>
-              <Button variant="ghost" asChild className="px-6">
-                <Link href="/debates">Browse All Debates</Link>
-              </Button>
+              <AIResearchAssistantDialog />
             </div>
           </div>
 
@@ -701,8 +689,250 @@ export default function Home() {
                 <span className="font-semibold">{formatNumber(stats.discussionCount)}</span>
                 <span className="text-slate-500">Discussions</span>
               </div>
+              {insightsStats && (
+                <>
+                  <Link href="/open-questions" className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-100 dark:bg-blue-900/50 rounded-full hover:bg-blue-200 dark:hover:bg-blue-800/50 transition-colors cursor-pointer">
+                    <HelpCircle className="w-4 h-4 text-blue-500" />
+                    <span className="font-semibold">{formatNumber(insightsStats.totalOpenQuestions)}</span>
+                    <span className="text-blue-600 dark:text-blue-400">Open Questions</span>
+                  </Link>
+                  <Link href="/research-ideas" className="flex items-center gap-1.5 px-3 py-1.5 bg-yellow-100 dark:bg-yellow-900/50 rounded-full hover:bg-yellow-200 dark:hover:bg-yellow-800/50 transition-colors cursor-pointer">
+                    <Brain className="w-4 h-4 text-yellow-500" />
+                    <span className="font-semibold">{formatNumber(insightsStats.totalResearchIdeas)}</span>
+                    <span className="text-yellow-600 dark:text-yellow-400">Research Ideas</span>
+                  </Link>
+                </>
+              )}
             </div>
           )}
+        </div>
+
+        {/* Two-Column AI Features Showcase */}
+        <div className="w-full max-w-7xl mb-16 grid grid-cols-1 lg:grid-cols-2 gap-8">
+          {/* LEFT: Multi-Agent Research Workflow */}
+          <div className="bg-gradient-to-br from-slate-50 to-indigo-50 dark:from-slate-900 dark:to-indigo-950/50 rounded-3xl p-6 border border-slate-200 dark:border-slate-700 shadow-lg">
+            <div className="text-center mb-6">
+              <h2 className="text-xl font-bold text-slate-800 dark:text-white mb-2 flex items-center justify-center gap-2">
+                <Sparkles className="w-5 h-5 text-purple-500" />
+                Multi-Agent Workflow
+              </h2>
+              <p className="text-sm text-slate-600 dark:text-slate-400">
+                Customize your own multi-agent work flow.
+              </p>
+            </div>
+
+            {/* Hierarchical Agent Architecture */}
+            <div className="relative">
+              {/* Chief Commander at Top */}
+              <div className="flex justify-center mb-2">
+                <div className="bg-gradient-to-br from-amber-400 to-orange-500 rounded-xl p-3 shadow-lg border-2 border-amber-300 dark:border-amber-600 text-center relative z-10">
+                  <div className="w-12 h-12 bg-white/20 rounded-lg flex items-center justify-center mx-auto mb-2">
+                    <Crown className="w-6 h-6 text-white" />
+                  </div>
+                  <h3 className="font-bold text-sm text-white">Commander</h3>
+                  <span className="text-[10px] text-amber-100">Orchestrates All</span>
+                </div>
+              </div>
+
+              {/* Connection Lines from Commander to Agents */}
+              <div className="flex justify-center mb-2">
+                <svg width="280" height="40" className="overflow-visible">
+                  {/* Left line */}
+                  <line x1="140" y1="0" x2="50" y2="40" stroke="currentColor" strokeWidth="2" className="text-slate-300 dark:text-slate-600" strokeDasharray="4,2" />
+                  {/* Center-left line */}
+                  <line x1="140" y1="0" x2="100" y2="40" stroke="currentColor" strokeWidth="2" className="text-slate-300 dark:text-slate-600" strokeDasharray="4,2" />
+                  {/* Center-right line */}
+                  <line x1="140" y1="0" x2="180" y2="40" stroke="currentColor" strokeWidth="2" className="text-slate-300 dark:text-slate-600" strokeDasharray="4,2" />
+                  {/* Right line */}
+                  <line x1="140" y1="0" x2="230" y2="40" stroke="currentColor" strokeWidth="2" className="text-slate-300 dark:text-slate-600" strokeDasharray="4,2" />
+                </svg>
+              </div>
+
+              {/* Four Agents Row */}
+              <div className="grid grid-cols-4 gap-2 mb-4">
+                {/* Math Agent */}
+                <div className="bg-white dark:bg-slate-800 rounded-xl p-2 shadow-sm border border-blue-200 dark:border-blue-800 text-center">
+                  <div className="w-8 h-8 bg-gradient-to-br from-blue-400 to-blue-600 rounded-lg flex items-center justify-center mx-auto mb-1">
+                    <Calculator className="w-4 h-4 text-white" />
+                  </div>
+                  <h3 className="font-semibold text-[10px] text-slate-800 dark:text-white">Math</h3>
+                  <span className="text-[8px] text-blue-600 dark:text-blue-400">Calculation</span>
+                </div>
+
+                {/* Code Agent */}
+                <div className="bg-white dark:bg-slate-800 rounded-xl p-2 shadow-sm border border-green-200 dark:border-green-800 text-center">
+                  <div className="w-8 h-8 bg-gradient-to-br from-green-400 to-green-600 rounded-lg flex items-center justify-center mx-auto mb-1">
+                    <Code className="w-4 h-4 text-white" />
+                  </div>
+                  <h3 className="font-semibold text-[10px] text-slate-800 dark:text-white">Code</h3>
+                  <span className="text-[8px] text-green-600 dark:text-green-400">Programming</span>
+                </div>
+
+                {/* Research Agent */}
+                <div className="bg-white dark:bg-slate-800 rounded-xl p-2 shadow-sm border border-purple-200 dark:border-purple-800 text-center">
+                  <div className="w-8 h-8 bg-gradient-to-br from-purple-400 to-purple-600 rounded-lg flex items-center justify-center mx-auto mb-1">
+                    <SearchIcon className="w-4 h-4 text-white" />
+                  </div>
+                  <h3 className="font-semibold text-[10px] text-slate-800 dark:text-white">Research</h3>
+                  <span className="text-[8px] text-purple-600 dark:text-purple-400">Analysis</span>
+                </div>
+
+                {/* Writer Agent */}
+                <div className="bg-white dark:bg-slate-800 rounded-xl p-2 shadow-sm border border-rose-200 dark:border-rose-800 text-center">
+                  <div className="w-8 h-8 bg-gradient-to-br from-rose-400 to-rose-600 rounded-lg flex items-center justify-center mx-auto mb-1">
+                    <FileText className="w-4 h-4 text-white" />
+                  </div>
+                  <h3 className="font-semibold text-[10px] text-slate-800 dark:text-white">Writer</h3>
+                  <span className="text-[8px] text-rose-600 dark:text-rose-400">Documentation</span>
+                </div>
+              </div>
+
+              {/* Arrow Down */}
+              <div className="flex justify-center mb-3">
+                <ArrowDown className="w-5 h-5 text-slate-400" />
+              </div>
+
+              {/* Output */}
+              <div className="bg-gradient-to-r from-indigo-600 to-purple-600 rounded-xl px-4 py-3 shadow-md">
+                <div className="flex items-center gap-3 text-white">
+                  <div className="w-8 h-8 bg-white/20 rounded-lg flex items-center justify-center flex-shrink-0">
+                    <Combine className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <div className="text-[10px] font-medium opacity-90">COLLABORATIVE OUTPUT</div>
+                    <div className="text-sm font-bold">Research + Code + Report</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* CTA Button */}
+            <div className="flex justify-center mt-6">
+              <Link href="/agent-lego">
+                <Button size="sm" className="gap-2 bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600">
+                  <Blocks className="w-4 h-4" />
+                  Try Agent Lego
+                  <ChevronRight className="w-3 h-3" />
+                </Button>
+              </Link>
+            </div>
+          </div>
+
+          {/* RIGHT: AI Debate Showcase */}
+          <div className="bg-gradient-to-br from-slate-50 to-rose-50 dark:from-slate-900 dark:to-rose-950/30 rounded-3xl p-6 border border-slate-200 dark:border-slate-700 shadow-lg">
+            <div className="text-center mb-6">
+              <h2 className="text-xl font-bold text-slate-800 dark:text-white mb-2 flex items-center justify-center gap-2">
+                <Scale className="w-5 h-5 text-rose-500" />
+                AI Paper Debates
+              </h2>
+              <p className="text-sm text-slate-600 dark:text-slate-400">
+                As agents debate against each others towards truth.
+              </p>
+            </div>
+
+            {/* Paper Being Read */}
+            <div className="bg-white dark:bg-slate-800 rounded-xl px-4 py-3 mb-4 shadow-sm border border-slate-200 dark:border-slate-700">
+              <div className="flex items-center gap-2">
+                <FileText className="w-5 h-5 text-slate-500 flex-shrink-0" />
+                <div>
+                  <div className="text-[10px] text-slate-500">PAPER</div>
+                  <div className="text-sm font-medium text-slate-800 dark:text-white">"Attention Is All You Need"</div>
+                </div>
+              </div>
+            </div>
+
+            {/* Arrow Down with "Both Read" */}
+            <div className="flex justify-center mb-4">
+              <div className="flex flex-col items-center text-slate-400">
+                <ArrowDown className="w-5 h-5" />
+                <span className="text-[10px] font-medium">Both agents read</span>
+              </div>
+            </div>
+
+            {/* Three Agents Row: Affirmative - Judge - Negative */}
+            <div className="grid grid-cols-3 gap-3 mb-4 items-start">
+              {/* Affirmative Agent */}
+              <div className="bg-white dark:bg-slate-800 rounded-xl p-3 shadow-sm border-2 border-emerald-200 dark:border-emerald-800">
+                <div className="flex flex-col items-center text-center mb-2">
+                  <div className="w-10 h-10 bg-gradient-to-br from-emerald-400 to-emerald-600 rounded-lg flex items-center justify-center mb-1">
+                    <ThumbsUp className="w-5 h-5 text-white" />
+                  </div>
+                  <h3 className="font-semibold text-xs text-slate-800 dark:text-white">Affirmative</h3>
+                  <span className="text-[10px] text-emerald-600 dark:text-emerald-400">GPT-4o</span>
+                </div>
+                <div className="bg-emerald-50 dark:bg-emerald-900/20 rounded-lg p-2 text-[10px] text-slate-600 dark:text-slate-400 italic">
+                  "Revolutionary attention mechanism..."
+                </div>
+              </div>
+
+              {/* Judge Agent in the Middle */}
+              <div className="relative">
+                {/* Connection lines */}
+                <svg className="absolute inset-0 w-full h-full overflow-visible pointer-events-none" style={{ zIndex: 0 }}>
+                  <line x1="0" y1="50%" x2="30%" y2="50%" stroke="currentColor" strokeWidth="2" className="text-amber-400" strokeDasharray="4,2" />
+                  <line x1="70%" y1="50%" x2="100%" y2="50%" stroke="currentColor" strokeWidth="2" className="text-amber-400" strokeDasharray="4,2" />
+                </svg>
+                <div className="bg-gradient-to-br from-amber-400 to-yellow-500 rounded-xl p-3 shadow-lg border-2 border-amber-300 dark:border-amber-600 relative z-10">
+                  <div className="flex flex-col items-center text-center">
+                    <div className="w-12 h-12 bg-white/20 rounded-lg flex items-center justify-center mb-1">
+                      <Gavel className="w-6 h-6 text-white" />
+                    </div>
+                    <h3 className="font-bold text-xs text-white">Judge</h3>
+                    <span className="text-[10px] text-amber-100">Gemini Pro</span>
+                    <div className="mt-2 bg-white/20 rounded-lg px-2 py-1">
+                      <span className="text-[9px] text-white font-medium">Evaluating...</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Negative Agent */}
+              <div className="bg-white dark:bg-slate-800 rounded-xl p-3 shadow-sm border-2 border-rose-200 dark:border-rose-800">
+                <div className="flex flex-col items-center text-center mb-2">
+                  <div className="w-10 h-10 bg-gradient-to-br from-rose-400 to-rose-600 rounded-lg flex items-center justify-center mb-1">
+                    <ThumbsDown className="w-5 h-5 text-white" />
+                  </div>
+                  <h3 className="font-semibold text-xs text-slate-800 dark:text-white">Negative</h3>
+                  <span className="text-[10px] text-rose-600 dark:text-rose-400">Claude</span>
+                </div>
+                <div className="bg-rose-50 dark:bg-rose-900/20 rounded-lg p-2 text-[10px] text-slate-600 dark:text-slate-400 italic">
+                  "Quadratic complexity limits..."
+                </div>
+              </div>
+            </div>
+
+            {/* Crossed Swords */}
+            <div className="flex justify-center mb-4">
+              <div className="flex items-center gap-2">
+                <Swords className="w-5 h-5 text-slate-400 animate-pulse" />
+                <span className="text-xs text-slate-500 font-medium">Debating towards truth</span>
+              </div>
+            </div>
+
+            {/* Verdict Output */}
+            <div className="bg-gradient-to-r from-indigo-600 to-purple-600 rounded-xl px-4 py-3 shadow-md">
+              <div className="flex items-center gap-3 text-white">
+                <div className="w-8 h-8 bg-white/20 rounded-lg flex items-center justify-center flex-shrink-0">
+                  <Scale className="w-4 h-4" />
+                </div>
+                <div>
+                  <div className="text-[10px] font-medium opacity-90">VERDICT</div>
+                  <div className="text-sm font-bold">Fair judgment based on evidence</div>
+                </div>
+              </div>
+            </div>
+
+            {/* CTA Button */}
+            <div className="flex justify-center mt-6">
+              <Link href="/debates">
+                <Button size="sm" className="gap-2 bg-gradient-to-r from-rose-500 to-amber-500 hover:from-rose-600 hover:to-amber-600">
+                  <Scale className="w-4 h-4" />
+                  View AI Debates
+                  <ChevronRight className="w-3 h-3" />
+                </Button>
+              </Link>
+            </div>
+          </div>
         </div>
 
         {/* Animated Danmaku Section */}
@@ -820,9 +1050,12 @@ export default function Home() {
 
       {/* Footer */}
       <footer className="py-6 text-center">
-        <div className="flex items-center justify-center gap-6 text-sm text-slate-500">
+        <div className="flex items-center justify-center gap-6 text-sm text-slate-500 mb-3">
           <Link href="/about" className="hover:text-slate-700 dark:hover:text-slate-300 transition-colors">
             About
+          </Link>
+          <Link href="/feedback" className="hover:text-slate-700 dark:hover:text-slate-300 transition-colors">
+            Feedback
           </Link>
           <a href="https://github.com/yezhuoyang/danmaku" target="_blank" rel="noopener noreferrer" className="hover:text-slate-700 dark:hover:text-slate-300 transition-colors">
             GitHub
@@ -831,6 +1064,15 @@ export default function Home() {
             Documentation
           </a>
         </div>
+        <p className="text-sm text-slate-500 dark:text-slate-400">
+          Contact developer: John Ye{" "}
+          <a
+            href="mailto:yezhuoyang@cs.ucla.edu"
+            className="text-indigo-600 dark:text-indigo-400 hover:underline"
+          >
+            yezhuoyang@cs.ucla.edu
+          </a>
+        </p>
       </footer>
     </div>
   );

@@ -13,6 +13,15 @@ import papersRouter from "./routes/papers.js";
 import adminRouter from "./routes/admin.js";
 import challengesRouter from "./routes/challenges.js";
 import debatesRouter from "./routes/debates.js";
+import agentLegoRouter from "./routes/agent-lego.js";
+import categoriesRouter from "./routes/categories.js";
+import feedbackRouter from "./routes/feedback.js";
+import paperGroupsRouter from "./routes/paper-groups.js";
+import backgroundReadingRouter from "./routes/background-reading.js";
+import insightsRouter from "./routes/insights.js";
+
+// Import background worker
+import { startBackgroundWorker } from "./lib/background-worker.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -21,11 +30,16 @@ async function startServer() {
   const app = express();
   const server = createServer(app);
 
-  // Middleware
-  app.use(express.json({ limit: '10mb' }));  // Increased limit for base64 avatar images
-  app.use(express.urlencoded({ limit: '10mb', extended: true }));
+  // Middleware - 50mb limit to handle multiple base64 images in feedback
+  app.use(express.json({ limit: '50mb' }));
+  app.use(express.urlencoded({ limit: '50mb', extended: true }));
   app.use(cookieParser());
   app.use(authMiddleware);
+
+  // Health check endpoint (for Docker/load balancers)
+  app.get("/api/health", (_req, res) => {
+    res.json({ status: "ok", timestamp: new Date().toISOString() });
+  });
 
   // API routes
   app.use("/api/auth", authRouter);
@@ -33,6 +47,15 @@ async function startServer() {
   app.use("/api/admin", adminRouter);
   app.use("/api/challenges", challengesRouter);
   app.use("/api/debates", debatesRouter);
+  app.use("/api/agent-lego", agentLegoRouter);
+  app.use("/api/categories", categoriesRouter);
+  app.use("/api/feedback", feedbackRouter);
+  app.use("/api/paper-groups", paperGroupsRouter);
+  app.use("/api/background-reading", backgroundReadingRouter);
+  app.use("/api/insights", insightsRouter);
+
+  // Start background worker for AI reading jobs
+  startBackgroundWorker();
 
   // Serve static files from dist/public in production
   const staticPath =

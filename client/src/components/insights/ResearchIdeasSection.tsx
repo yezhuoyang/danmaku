@@ -5,6 +5,17 @@ import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import {
   FlaskConical,
   RefreshCw,
   Loader2,
@@ -16,6 +27,8 @@ import {
   Sparkles,
   Zap,
   Star,
+  Trophy,
+  ArrowUpRight,
 } from "lucide-react";
 import type { AiAgentHistory, ResearchIdea, PublicInsight } from "../../../../shared/types";
 import * as api from "../../lib/api";
@@ -36,6 +49,14 @@ export function ResearchIdeasSection({ paperId, sessions, currentUserId }: Resea
   const [isLoading, setIsLoading] = useState(false);
   const [selectedSession, setSelectedSession] = useState<string | null>(null);
   const [expandedPublicSessions, setExpandedPublicSessions] = useState<Set<string>>(new Set());
+
+  // Promotion state
+  const [promotionDialogOpen, setPromotionDialogOpen] = useState(false);
+  const [promotingIdea, setPromotingIdea] = useState<{idea: ResearchIdea; historyId: string} | null>(null);
+  const [promotionTitle, setPromotionTitle] = useState('');
+  const [promotionDescription, setPromotionDescription] = useState('');
+  const [promotionArea, setPromotionArea] = useState('');
+  const [isPromoting, setIsPromoting] = useState(false);
 
   // Filter sessions that have AI analysis and belong to current user
   const eligibleSessions = sessions.filter(
@@ -99,6 +120,38 @@ export function ResearchIdeasSection({ paperId, sessions, currentUserId }: Resea
     });
   };
 
+  // Open promotion dialog
+  const openPromotionDialog = (idea: ResearchIdea, historyId: string) => {
+    setPromotingIdea({ idea, historyId });
+    setPromotionTitle(idea.title);
+    setPromotionDescription(idea.description);
+    setPromotionArea('');
+    setPromotionDialogOpen(true);
+  };
+
+  // Handle promotion submit
+  const handlePromoteIdea = async () => {
+    if (!promotingIdea) return;
+
+    setIsPromoting(true);
+    try {
+      const result = await api.promoteIdeaToChallenge({
+        historyId: promotingIdea.historyId,
+        ideaId: promotingIdea.idea.id!,
+        title: promotionTitle,
+        description: promotionDescription,
+        area: promotionArea || undefined,
+      });
+      toast.success('Research idea promoted to Challenge Problem!');
+      setPromotionDialogOpen(false);
+      setPromotingIdea(null);
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to promote idea');
+    } finally {
+      setIsPromoting(false);
+    }
+  };
+
   // Render feasibility badge color
   const getFeasibilityColor = (feasibility: string) => {
     switch (feasibility) {
@@ -118,7 +171,7 @@ export function ResearchIdeasSection({ paperId, sessions, currentUserId }: Resea
   };
 
   // Render a single research idea
-  const renderIdea = (idea: ResearchIdea, i: number) => (
+  const renderIdea = (idea: ResearchIdea, i: number, historyId?: string) => (
     <div key={idea.id || i} className="p-4 bg-muted/50 rounded-lg border">
       <div className="space-y-3">
         <div className="flex items-start justify-between gap-2">
@@ -126,7 +179,7 @@ export function ResearchIdeasSection({ paperId, sessions, currentUserId }: Resea
             <FlaskConical className="h-4 w-4 text-blue-500" />
             <h4 className="font-medium">{idea.title}</h4>
           </div>
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1 flex-wrap">
             <Badge className={`text-xs ${getFeasibilityColor(idea.feasibility)}`}>
               {idea.feasibility} feasibility
             </Badge>
@@ -134,6 +187,20 @@ export function ResearchIdeasSection({ paperId, sessions, currentUserId }: Resea
               {getNoveltyIcon(idea.novelty)}
               {idea.novelty}
             </Badge>
+            {historyId && currentUserId && idea.id && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6 px-2 text-xs ml-1"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  openPromotionDialog(idea, historyId);
+                }}
+              >
+                <Trophy className="h-3 w-3 mr-1" />
+                Promote
+              </Button>
+            )}
           </div>
         </div>
 
@@ -222,7 +289,7 @@ export function ResearchIdeasSection({ paperId, sessions, currentUserId }: Resea
         </div>
 
         <div className="space-y-4 max-h-[400px] overflow-y-auto">
-          {researchIdeas.map((idea, i) => renderIdea(idea, i))}
+          {researchIdeas.map((idea, i) => renderIdea(idea, i, selectedSession || undefined))}
         </div>
       </div>
     );
@@ -294,35 +361,117 @@ export function ResearchIdeasSection({ paperId, sessions, currentUserId }: Resea
   };
 
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <CardTitle className="flex items-center gap-2 text-lg">
-          <FlaskConical className="h-5 w-5 text-blue-500" />
-          Research Ideas
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'mine' | 'public')}>
-          <TabsList className="grid w-full grid-cols-2 mb-4">
-            <TabsTrigger value="mine" className="flex items-center gap-1.5 text-xs">
-              <User className="h-3.5 w-3.5" />
-              My Ideas
-            </TabsTrigger>
-            <TabsTrigger value="public" className="flex items-center gap-1.5 text-xs">
-              <Globe className="h-3.5 w-3.5" />
-              Public ({publicInsights.length})
-            </TabsTrigger>
-          </TabsList>
+    <>
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-lg">
+            <FlaskConical className="h-5 w-5 text-blue-500" />
+            Research Ideas
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'mine' | 'public')}>
+            <TabsList className="grid w-full grid-cols-2 mb-4">
+              <TabsTrigger value="mine" className="flex items-center gap-1.5 text-xs">
+                <User className="h-3.5 w-3.5" />
+                My Ideas
+              </TabsTrigger>
+              <TabsTrigger value="public" className="flex items-center gap-1.5 text-xs">
+                <Globe className="h-3.5 w-3.5" />
+                Public ({publicInsights.length})
+              </TabsTrigger>
+            </TabsList>
 
-          <TabsContent value="mine" className="mt-0">
-            {renderMyContent()}
-          </TabsContent>
+            <TabsContent value="mine" className="mt-0">
+              {renderMyContent()}
+            </TabsContent>
 
-          <TabsContent value="public" className="mt-0">
-            {renderPublicContent()}
-          </TabsContent>
-        </Tabs>
-      </CardContent>
-    </Card>
+            <TabsContent value="public" className="mt-0">
+              {renderPublicContent()}
+            </TabsContent>
+          </Tabs>
+        </CardContent>
+      </Card>
+
+      {/* Promotion Dialog */}
+      <Dialog open={promotionDialogOpen} onOpenChange={setPromotionDialogOpen}>
+        <DialogContent className="sm:max-w-[500px]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Trophy className="h-5 w-5 text-yellow-500" />
+              Promote to Challenge Problem
+            </DialogTitle>
+            <DialogDescription>
+              Promote this research idea to the Challenge Problems database for the community to explore.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="promo-title">Title</Label>
+              <Input
+                id="promo-title"
+                value={promotionTitle}
+                onChange={(e) => setPromotionTitle(e.target.value)}
+                placeholder="Challenge problem title"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="promo-description">Description</Label>
+              <Textarea
+                id="promo-description"
+                value={promotionDescription}
+                onChange={(e) => setPromotionDescription(e.target.value)}
+                placeholder="Describe the challenge problem"
+                rows={4}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="promo-area">Research Area (optional)</Label>
+              <Input
+                id="promo-area"
+                value={promotionArea}
+                onChange={(e) => setPromotionArea(e.target.value)}
+                placeholder="e.g., Machine Learning, NLP, Computer Vision"
+              />
+            </div>
+
+            {promotingIdea && (
+              <div className="p-3 bg-muted rounded-lg text-sm">
+                <div className="flex items-center gap-2 mb-2">
+                  <FlaskConical className="h-4 w-4 text-blue-500" />
+                  <span className="font-medium">Original Idea</span>
+                </div>
+                <div className="flex gap-2 text-xs text-muted-foreground">
+                  <Badge variant="outline" className={getFeasibilityColor(promotingIdea.idea.feasibility)}>
+                    {promotingIdea.idea.feasibility} feasibility
+                  </Badge>
+                  <Badge variant="outline">
+                    {promotingIdea.idea.novelty} novelty
+                  </Badge>
+                </div>
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPromotionDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handlePromoteIdea} disabled={isPromoting || !promotionTitle.trim()}>
+              {isPromoting ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Promoting...
+                </>
+              ) : (
+                <>
+                  <ArrowUpRight className="h-4 w-4 mr-2" />
+                  Promote to Challenge
+                </>
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

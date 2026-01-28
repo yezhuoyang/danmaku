@@ -6,11 +6,19 @@ import type {
   ChallengeProblem,
   ChallengeComment,
   ChallengeIdeaLink,
+  ChallengeProblemLink,
+  ChallengeCurationJob,
+  PromotionSuggestion,
   CreateChallengeProblemRequest,
   UpdateChallengeProblemRequest,
   LinkIdeaToQuestionRequest,
   CreateChallengeCommentRequest,
+  CreateChallengeProblemLinkRequest,
+  PromoteIdeaRequest,
+  TriggerCurationRequest,
   ChallengeProblemStatus,
+  CrossPaperRelationship,
+  CurationJobStatus,
 } from '../../shared/types.js';
 
 const router = Router();
@@ -51,8 +59,47 @@ function dbRowToChallengeProblem(row: any, user?: any): ChallengeProblem {
     commentCount: row.comment_count || 0,
     childCount: row.child_count || 0,
     linkedIdeaCount: row.linked_idea_count || 0,
+    // AI-managed fields
+    sourceHistoryId: row.source_history_id || undefined,
+    sourceType: row.source_type || 'manual',
+    aiSuggested: row.ai_suggested === 1,
+    promotionScore: row.promotion_score || undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+// Helper: Convert DB row to ChallengeProblemLink
+function dbRowToChallengeProblemLink(row: any): ChallengeProblemLink {
+  return {
+    id: row.id,
+    sourceId: row.source_id,
+    targetId: row.target_id,
+    relationship: row.relationship as CrossPaperRelationship,
+    confidence: row.confidence || 1.0,
+    aiGenerated: row.ai_generated === 1,
+    userId: row.user_id || undefined,
+    userName: row.user_name || row.display_name || undefined,
+    notes: row.notes || undefined,
+    createdAt: row.created_at,
+  };
+}
+
+// Helper: Convert DB row to ChallengeCurationJob
+function dbRowToCurationJob(row: any): ChallengeCurationJob {
+  return {
+    id: row.id,
+    userId: row.user_id,
+    userName: row.user_name || row.display_name || undefined,
+    status: row.status as CurationJobStatus,
+    scope: row.scope || undefined,
+    results: row.results ? JSON.parse(row.results) : undefined,
+    ideasAnalyzed: row.ideas_analyzed || 0,
+    suggestionsMade: row.suggestions_made || 0,
+    errorMessage: row.error_message || undefined,
+    startedAt: row.started_at || undefined,
+    completedAt: row.completed_at || undefined,
+    createdAt: row.created_at,
   };
 }
 
@@ -236,6 +283,474 @@ router.get('/', (req: Request, res: Response) => {
 });
 
 // ============================================================================
+// STATIC ROUTES (must come before /:id routes)
+// ============================================================================
+
+// GET /api/challenges/suggest-promotions - Get AI suggestions for promoting ideas
+router.get('/suggest-promotions', requireAuth, (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    const { paperId, historyId, limit = 10 } = req.query;
+
+    // Get user's AI sessions with research ideas
+    let sessionsQuery = `
+      SELECT h.*, p.title as paper_title
+      FROM ai_agent_history h
+      LEFT JOIN papers p ON h.paper_id = p.id
+      WHERE h.user_id = ? AND h.research_ideas IS NOT NULL AND h.research_ideas != '[]'
+    `;
+    const params: any[] = [user.id];
+
+    if (paperId) {
+      sessionsQuery += ' AND h.paper_id = ?';
+      params.push(paperId);
+    }
+    if (historyId) {
+      sessionsQuery += ' AND h.id = ?';
+      params.push(historyId);
+    }
+
+    sessionsQuery += ' ORDER BY h.created_at DESC LIMIT 20';
+
+    const sessions = db.prepare(sessionsQuery).all(...params) as any[];
+
+    // Get existing challenge problems for deduplication
+    const existingProblems = db.prepare(`
+      SELECT id, title, source_history_id FROM challenge_problems
+    `).all() as any[];
+
+    const existingTitles = new Set(existingProblems.map(p => p.title.toLowerCase()));
+
+    // Collect suggestions
+    const suggestions: PromotionSuggestion[] = [];
+
+    for (const session of sessions) {
+      const ideas = session.research_ideas ? JSON.parse(session.research_ideas) : [];
+
+      for (const idea of ideas) {
+        // Skip if already promoted or similar title exists
+        if (existingTitles.has(idea.title?.toLowerCase())) continue;
+
+        // Simple scoring based on idea properties
+        let score = 0.5; // Base score
+        if (idea.novelty === 'breakthrough') score += 0.3;
+        else if (idea.novelty === 'moderate') score += 0.15;
+        if (idea.feasibility === 'high') score += 0.1;
+        if (idea.methodology) score += 0.05;
+        if (idea.expectedOutcome) score += 0.05;
+
+        suggestions.push({
+          ideaId: idea.id,
+          historyId: session.id,
+          paperId: session.paper_id,
+          paperTitle: session.paper_title || 'Unknown Paper',
+          title: idea.title,
+          description: idea.description,
+          score: Math.min(score, 1),
+          reasoning: `${idea.novelty || 'Unknown'} novelty with ${idea.feasibility || 'unknown'} feasibility`,
+          suggestedRelationships: [],
+        });
+      }
+    }
+
+    // Sort by score and limit
+    suggestions.sort((a, b) => b.score - a.score);
+    const limitedSuggestions = suggestions.slice(0, parseInt(limit as string));
+
+    res.json({
+      suggestions: limitedSuggestions,
+      existingProblemsCount: existingProblems.length,
+    });
+  } catch (error) {
+    console.error('Suggest promotions error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to get promotion suggestions' });
+  }
+});
+
+// POST /api/challenges/suggest-parent - Suggest parent problems for a new challenge using AI
+router.post('/suggest-parent', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { title, description, apiKey, provider = 'openai', customPrompt, candidateIds } = req.body as {
+      title: string;
+      description: string;
+      apiKey: string;
+      provider?: 'openai' | 'anthropic';
+      customPrompt?: string;
+      candidateIds?: string[];
+    };
+
+    if (!title || !apiKey) {
+      return res.status(400).json({ error: 'Bad Request', message: 'title and apiKey are required' });
+    }
+
+    // Get existing challenge problems (potential parents)
+    // If candidateIds are provided, only look at those; otherwise look at all top-level problems
+    let existingProblems: any[];
+    if (candidateIds && candidateIds.length > 0) {
+      const placeholders = candidateIds.map(() => '?').join(',');
+      existingProblems = db.prepare(`
+        SELECT id, title, description, type, status, area
+        FROM challenge_problems
+        WHERE id IN (${placeholders})
+        ORDER BY upvotes DESC, created_at DESC
+      `).all(...candidateIds) as any[];
+    } else {
+      existingProblems = db.prepare(`
+        SELECT id, title, description, type, status, area
+        FROM challenge_problems
+        WHERE parent_id IS NULL
+        ORDER BY upvotes DESC, created_at DESC
+        LIMIT 50
+      `).all() as any[];
+    }
+
+    if (existingProblems.length === 0) {
+      return res.json({ suggestions: [] });
+    }
+
+    // Use custom prompt if provided, otherwise use default
+    const prompt = customPrompt || `You are analyzing research problems to suggest which existing problem should be the parent of a new problem.
+
+NEW PROBLEM TO ADD:
+Title: ${title}
+Description: ${description || 'Not provided'}
+
+EXISTING TOP-LEVEL PROBLEMS (potential parents):
+${existingProblems.slice(0, 30).map((p, i) => `
+[${p.id}] ${p.title}
+Type: ${p.type}, Status: ${p.status}
+Area: ${p.area || 'General'}
+Description: ${p.description || 'No description'}
+`).join('\n')}
+
+Analyze which existing problems could be suitable parents for the new problem.
+A good parent is a broader, more general problem that the new problem is a specific instance or sub-question of.
+
+Return a JSON array of suggested parents (max 3, only confident ones):
+[
+  {
+    "id": "existing-problem-id",
+    "title": "Existing Problem Title",
+    "confidence": 0.85,
+    "reasoning": "Why this is a good parent"
+  }
+]
+
+Only include suggestions with confidence >= 0.6.
+If no existing problem is a good parent, return an empty array [].
+Return ONLY valid JSON, no other text.`;
+
+    let response: string;
+
+    if (provider === 'anthropic') {
+      // Dynamic import for Anthropic
+      let Anthropic: any;
+      try {
+        Anthropic = require('@anthropic-ai/sdk').default;
+      } catch {
+        return res.status(400).json({ error: 'Bad Request', message: 'Anthropic SDK not available' });
+      }
+      const anthropic = new Anthropic({ apiKey });
+      const result = await anthropic.messages.create({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 1000,
+        messages: [{ role: 'user', content: prompt }],
+      });
+      response = result.content[0].type === 'text' ? result.content[0].text : '[]';
+    } else {
+      const OpenAI = (await import('openai')).default;
+      const openai = new OpenAI({ apiKey });
+      const result = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: prompt }],
+        response_format: { type: 'json_object' },
+      });
+      response = result.choices[0]?.message?.content || '[]';
+    }
+
+    // Parse the response
+    const jsonMatch = response.match(/\[[\s\S]*\]/);
+    if (!jsonMatch) {
+      return res.json({ suggestions: [] });
+    }
+
+    const suggestions = JSON.parse(jsonMatch[0]) as Array<{
+      id: string;
+      title: string;
+      confidence: number;
+      reasoning: string;
+    }>;
+
+    // Validate and enrich suggestions
+    const validatedSuggestions = suggestions
+      .filter(s => s.confidence >= 0.6 && existingProblems.some(p => p.id === s.id))
+      .slice(0, 3)
+      .map(s => {
+        const problem = existingProblems.find(p => p.id === s.id);
+        return {
+          id: s.id,
+          title: problem?.title || s.title,
+          confidence: s.confidence,
+          reasoning: s.reasoning,
+        };
+      });
+
+    res.json({ suggestions: validatedSuggestions });
+  } catch (error) {
+    console.error('Suggest parent error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to suggest parent problems' });
+  }
+});
+
+// POST /api/challenges/promote - Promote a research idea to challenge problem
+router.post('/promote', requireAuth, (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    const { historyId, ideaId, title, description, area, tags, relationships, parentId, type } = req.body as PromoteIdeaRequest;
+
+    if (!historyId || !ideaId) {
+      return res.status(400).json({ error: 'Bad Request', message: 'historyId and ideaId are required' });
+    }
+
+    // Get the AI session to find the research idea
+    const session = db.prepare(`
+      SELECT h.*, p.title as paper_title, p.id as paper_id
+      FROM ai_agent_history h
+      LEFT JOIN papers p ON h.paper_id = p.id
+      WHERE h.id = ? AND h.user_id = ?
+    `).get(historyId, user.id) as any;
+
+    if (!session) {
+      return res.status(404).json({ error: 'Not Found', message: 'AI session not found or not owned by you' });
+    }
+
+    // Parse both research ideas and open questions from session
+    const researchIdeas = session.research_ideas ? JSON.parse(session.research_ideas) : [];
+    const openQuestions = session.open_questions ? JSON.parse(session.open_questions) : [];
+
+    // Helper to generate the same ID format used in reorganize endpoint
+    const generateIdeaId = (text: string, prefix: string) =>
+      `${prefix}-${Buffer.from(text || '').toString('base64').slice(0, 12)}`;
+
+    // Try to find in research ideas first, then open questions
+    // 1. First try exact ID match
+    // 2. Then try matching by generated ID pattern (for ideas without stored IDs)
+    // 3. Finally try title match as fallback
+    let idea = researchIdeas.find((i: any) => i.id === ideaId);
+    let isOpenQuestion = false;
+
+    if (!idea) {
+      idea = openQuestions.find((q: any) => q.id === ideaId);
+      if (idea) isOpenQuestion = true;
+    }
+
+    // Try matching by generated ID pattern
+    if (!idea && ideaId.startsWith('ri-')) {
+      idea = researchIdeas.find((i: any) => generateIdeaId(i.title, 'ri') === ideaId);
+    }
+    if (!idea && ideaId.startsWith('oq-')) {
+      idea = openQuestions.find((q: any) => generateIdeaId(q.question, 'oq') === ideaId);
+      if (idea) isOpenQuestion = true;
+    }
+
+    // Last resort: try to find by title from the request
+    if (!idea && title) {
+      idea = researchIdeas.find((i: any) => i.title === title);
+      if (!idea) {
+        idea = openQuestions.find((q: any) => q.question === title);
+        if (idea) isOpenQuestion = true;
+      }
+    }
+
+    if (!idea) {
+      return res.status(404).json({ error: 'Not Found', message: 'Idea/question not found in session' });
+    }
+
+    // Check for duplicates (same title from same session)
+    const existing = db.prepare(`
+      SELECT id FROM challenge_problems
+      WHERE source_history_id = ? AND title = ?
+    `).get(historyId, title || idea.title);
+
+    if (existing) {
+      return res.status(409).json({ error: 'Conflict', message: 'This idea has already been promoted' });
+    }
+
+    // If parentId provided, calculate depth and root_id
+    let depth = 0;
+    let rootId: string | null = null;
+
+    if (parentId) {
+      const parentRow = db.prepare('SELECT id, root_id, depth FROM challenge_problems WHERE id = ?').get(parentId) as any;
+      if (parentRow) {
+        depth = (parentRow.depth || 0) + 1;
+        rootId = parentRow.root_id || parentRow.id;
+      }
+    }
+
+    // Determine the problem type based on source or explicit type
+    const problemType = type || (isOpenQuestion ? 'open_question' : 'research_idea');
+
+    // Extract fields based on whether it's an open question or research idea
+    const finalTitle = title || (isOpenQuestion ? idea.question : idea.title);
+    const finalDescription = description || (isOpenQuestion ? idea.context : idea.description);
+    const finalTags = tags || (isOpenQuestion && idea.relatedTopics ? idea.relatedTopics : []);
+
+    // Create the challenge problem
+    const problemId = uuidv4();
+    db.prepare(`
+      INSERT INTO challenge_problems (
+        id, paper_id, history_id, user_id, parent_id, root_id, depth,
+        type, status, title, description, context,
+        methodology, expected_outcome, feasibility, novelty, prerequisites,
+        area, tags, source_history_id, source_type, ai_suggested
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      problemId,
+      session.paper_id || null,
+      historyId,
+      user.id,
+      parentId || null,
+      rootId,
+      depth,
+      problemType,
+      'unsolved',
+      finalTitle,
+      finalDescription,
+      `From paper: ${session.paper_title || 'Unknown'}`,
+      isOpenQuestion ? null : (idea.methodology || null),
+      isOpenQuestion ? null : (idea.expectedOutcome || null),
+      isOpenQuestion ? (idea.importance || null) : (idea.feasibility || null),
+      isOpenQuestion ? null : (idea.novelty || null),
+      !isOpenQuestion && idea.prerequisites ? JSON.stringify(idea.prerequisites) : null,
+      area || null,
+      Array.isArray(finalTags) ? JSON.stringify(finalTags) : '[]',
+      historyId,
+      'promoted',
+      0
+    );
+
+    // Create cross-paper links if provided
+    if (relationships && relationships.length > 0) {
+      for (const rel of relationships) {
+        const linkId = uuidv4();
+        try {
+          db.prepare(`
+            INSERT INTO challenge_problem_links (id, source_id, target_id, relationship, user_id, ai_generated)
+            VALUES (?, ?, ?, ?, ?, 0)
+          `).run(linkId, problemId, rel.targetId, rel.relationship, user.id);
+        } catch (e) {
+          console.warn('Failed to create link:', e);
+        }
+      }
+    }
+
+    // Fetch the created problem
+    const createdRow = db.prepare(`
+      SELECT cp.*, u.display_name as user_name, u.avatar as user_avatar, p.title as paper_title
+      FROM challenge_problems cp
+      LEFT JOIN users u ON cp.user_id = u.id
+      LEFT JOIN papers p ON cp.paper_id = p.id
+      WHERE cp.id = ?
+    `).get(problemId) as any;
+
+    res.status(201).json({ problem: dbRowToChallengeProblem(createdRow) });
+  } catch (error) {
+    console.error('Promote idea error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to promote idea' });
+  }
+});
+
+// POST /api/challenges/curate - Trigger an AI curation job
+router.post('/curate', requireAuth, (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    const { scope = 'all' } = req.body as TriggerCurationRequest;
+
+    // Check if there's already a running job for this user
+    const runningJob = db.prepare(`
+      SELECT id FROM challenge_curation_jobs
+      WHERE user_id = ? AND status IN ('pending', 'running')
+    `).get(user.id);
+
+    if (runningJob) {
+      return res.status(409).json({
+        error: 'Conflict',
+        message: 'You already have a curation job in progress'
+      });
+    }
+
+    const jobId = uuidv4();
+    db.prepare(`
+      INSERT INTO challenge_curation_jobs (id, user_id, status, scope)
+      VALUES (?, ?, 'pending', ?)
+    `).run(jobId, user.id, scope);
+
+    const job = db.prepare(`
+      SELECT j.*, u.display_name as user_name
+      FROM challenge_curation_jobs j
+      LEFT JOIN users u ON j.user_id = u.id
+      WHERE j.id = ?
+    `).get(jobId) as any;
+
+    res.status(201).json({ job: dbRowToCurationJob(job) });
+  } catch (error) {
+    console.error('Create curation job error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to create curation job' });
+  }
+});
+
+// GET /api/challenges/curate - List user's curation jobs
+router.get('/curate', requireAuth, (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    const { limit = 10, offset = 0 } = req.query;
+
+    const jobs = db.prepare(`
+      SELECT j.*, u.display_name as user_name
+      FROM challenge_curation_jobs j
+      LEFT JOIN users u ON j.user_id = u.id
+      WHERE j.user_id = ?
+      ORDER BY j.created_at DESC
+      LIMIT ? OFFSET ?
+    `).all(user.id, parseInt(limit as string), parseInt(offset as string)) as any[];
+
+    res.json({ jobs: jobs.map(dbRowToCurationJob) });
+  } catch (error) {
+    console.error('List curation jobs error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to list curation jobs' });
+  }
+});
+
+// GET /api/challenges/curate/:jobId - Get curation job status
+router.get('/curate/:jobId', requireAuth, (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    const { jobId } = req.params;
+
+    const job = db.prepare(`
+      SELECT j.*, u.display_name as user_name
+      FROM challenge_curation_jobs j
+      LEFT JOIN users u ON j.user_id = u.id
+      WHERE j.id = ?
+    `).get(jobId) as any;
+
+    if (!job) {
+      return res.status(404).json({ error: 'Not Found', message: 'Curation job not found' });
+    }
+
+    if (job.user_id !== user.id && !user.isAdmin) {
+      return res.status(403).json({ error: 'Forbidden', message: 'Access denied' });
+    }
+
+    res.json({ job: dbRowToCurationJob(job) });
+  } catch (error) {
+    console.error('Get curation job error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to get curation job' });
+  }
+});
+
+// ============================================================================
 // GET /api/challenges/:id - Get single problem with full details
 // ============================================================================
 router.get('/:id', (req: Request, res: Response) => {
@@ -317,6 +832,8 @@ router.get('/:id', (req: Request, res: Response) => {
         commentCount: 0,
         childCount: 0,
         linkedIdeaCount: 0,
+        sourceType: 'manual' as const,
+        aiSuggested: false,
         createdAt: 0,
         updatedAt: 0,
       },
@@ -982,6 +1499,160 @@ router.delete('/comments/:commentId', requireAuth, (req: Request, res: Response)
   } catch (error) {
     console.error('Delete comment error:', error);
     res.status(500).json({ error: 'Internal Server Error', message: 'Failed to delete comment' });
+  }
+});
+
+// ============================================================================
+// CROSS-PAPER RELATIONSHIP LINKS
+// ============================================================================
+
+// GET /api/challenges/:id/links - Get all cross-paper links for a problem
+router.get('/:id/links', (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    // Verify problem exists
+    const problem = db.prepare('SELECT id FROM challenge_problems WHERE id = ?').get(id);
+    if (!problem) {
+      return res.status(404).json({ error: 'Not Found', message: 'Problem not found' });
+    }
+
+    // Get outgoing links (this problem is source)
+    const outgoingRows = db.prepare(`
+      SELECT l.*, u.display_name as user_name,
+             tp.title as target_title, tp.type as target_type, tp.status as target_status
+      FROM challenge_problem_links l
+      LEFT JOIN users u ON l.user_id = u.id
+      LEFT JOIN challenge_problems tp ON l.target_id = tp.id
+      WHERE l.source_id = ?
+      ORDER BY l.created_at DESC
+    `).all(id) as any[];
+
+    // Get incoming links (this problem is target)
+    const incomingRows = db.prepare(`
+      SELECT l.*, u.display_name as user_name,
+             sp.title as source_title, sp.type as source_type, sp.status as source_status
+      FROM challenge_problem_links l
+      LEFT JOIN users u ON l.user_id = u.id
+      LEFT JOIN challenge_problems sp ON l.source_id = sp.id
+      WHERE l.target_id = ?
+      ORDER BY l.created_at DESC
+    `).all(id) as any[];
+
+    const outgoingLinks = outgoingRows.map(row => ({
+      ...dbRowToChallengeProblemLink(row),
+      targetProblemTitle: row.target_title,
+      targetProblem: {
+        id: row.target_id,
+        title: row.target_title,
+        type: row.target_type,
+        status: row.target_status,
+      }
+    }));
+
+    const incomingLinks = incomingRows.map(row => ({
+      ...dbRowToChallengeProblemLink(row),
+      targetProblemTitle: row.source_title, // For incoming, the "target" from our perspective is the source
+      sourceProblem: {
+        id: row.source_id,
+        title: row.source_title,
+        type: row.source_type,
+        status: row.source_status,
+      }
+    }));
+
+    // Combine for simple frontend consumption
+    const links = [...outgoingLinks, ...incomingLinks];
+
+    res.json({ links, outgoingLinks, incomingLinks });
+  } catch (error) {
+    console.error('Get links error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to get links' });
+  }
+});
+
+// POST /api/challenges/:id/links - Create a cross-paper relationship link
+router.post('/:id/links', requireAuth, (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    const { id: sourceId } = req.params;
+    const { targetId, relationship, notes } = req.body as CreateChallengeProblemLinkRequest;
+
+    // Validate
+    if (!targetId || !relationship) {
+      return res.status(400).json({ error: 'Bad Request', message: 'targetId and relationship are required' });
+    }
+
+    const validRelationships: CrossPaperRelationship[] = ['extends', 'contradicts', 'builds_on', 'supersedes', 'related'];
+    if (!validRelationships.includes(relationship)) {
+      return res.status(400).json({ error: 'Bad Request', message: 'Invalid relationship type' });
+    }
+
+    // Verify both problems exist
+    const source = db.prepare('SELECT id FROM challenge_problems WHERE id = ?').get(sourceId);
+    const target = db.prepare('SELECT id FROM challenge_problems WHERE id = ?').get(targetId);
+
+    if (!source || !target) {
+      return res.status(404).json({ error: 'Not Found', message: 'One or both problems not found' });
+    }
+
+    if (sourceId === targetId) {
+      return res.status(400).json({ error: 'Bad Request', message: 'Cannot link a problem to itself' });
+    }
+
+    // Check if link already exists
+    const existing = db.prepare(`
+      SELECT id FROM challenge_problem_links
+      WHERE source_id = ? AND target_id = ? AND relationship = ?
+    `).get(sourceId, targetId, relationship);
+
+    if (existing) {
+      return res.status(409).json({ error: 'Conflict', message: 'This link already exists' });
+    }
+
+    const linkId = uuidv4();
+    db.prepare(`
+      INSERT INTO challenge_problem_links (id, source_id, target_id, relationship, user_id, notes, ai_generated)
+      VALUES (?, ?, ?, ?, ?, ?, 0)
+    `).run(linkId, sourceId, targetId, relationship, user.id, notes || null);
+
+    const link = db.prepare(`
+      SELECT l.*, u.display_name as user_name
+      FROM challenge_problem_links l
+      LEFT JOIN users u ON l.user_id = u.id
+      WHERE l.id = ?
+    `).get(linkId) as any;
+
+    res.status(201).json({ link: dbRowToChallengeProblemLink(link) });
+  } catch (error) {
+    console.error('Create link error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to create link' });
+  }
+});
+
+// DELETE /api/challenges/links/:linkId - Delete a cross-paper link
+router.delete('/links/:linkId', requireAuth, (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    const { linkId } = req.params;
+
+    const link = db.prepare('SELECT id, user_id FROM challenge_problem_links WHERE id = ?').get(linkId) as any;
+
+    if (!link) {
+      return res.status(404).json({ error: 'Not Found', message: 'Link not found' });
+    }
+
+    // Only link creator or admin can delete
+    if (link.user_id !== user.id && !user.isAdmin) {
+      return res.status(403).json({ error: 'Forbidden', message: 'You can only delete your own links' });
+    }
+
+    db.prepare('DELETE FROM challenge_problem_links WHERE id = ?').run(linkId);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Delete link error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to delete link' });
   }
 });
 

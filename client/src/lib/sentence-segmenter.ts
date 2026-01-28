@@ -36,26 +36,38 @@ const ABBREVIATIONS = new Set([
 const PARAGRAPH_GAP_MULTIPLIER = 1.8;
 
 /**
- * Check if a period at position `idx` in `text` is likely a sentence ending.
+ * Check if a punctuation mark at position `idx` in `text` is likely a sentence ending.
+ * Handles periods (.), question marks (?), and exclamation points (!).
  */
-function isSentenceEndingPeriod(text: string, idx: number): boolean {
-  if (text[idx] !== '.') return false;
+function isSentenceEnding(text: string, idx: number): boolean {
+  const char = text[idx];
 
-  const afterPeriod = text.slice(idx + 1);
+  // Check for sentence-ending punctuation: . ? !
+  if (char !== '.' && char !== '?' && char !== '!') return false;
+
+  const afterPunctuation = text.slice(idx + 1);
 
   // If at end of text, it's a sentence ending
-  if (afterPeriod.trim().length === 0) {
+  if (afterPunctuation.trim().length === 0) {
     return true;
   }
 
+  // For ? and !, they are almost always sentence endings when followed by whitespace and capital
+  // or when at the end. Less strict than periods.
+  if (char === '?' || char === '!') {
+    // Must be followed by whitespace then capital letter (or end of text)
+    return /^\s+[A-Z]/.test(afterPunctuation) || afterPunctuation.trim().length === 0;
+  }
+
+  // For periods, apply stricter rules
   // Must be followed by whitespace then capital letter
-  if (!/^\s+[A-Z]/.test(afterPeriod)) {
+  if (!/^\s+[A-Z]/.test(afterPunctuation)) {
     return false;
   }
 
-  // Check for abbreviations
-  const beforePeriod = text.slice(0, idx);
-  const wordMatch = beforePeriod.match(/(\w+)$/);
+  // Check for abbreviations (only applies to periods)
+  const beforePunctuation = text.slice(0, idx);
+  const wordMatch = beforePunctuation.match(/(\w+)$/);
   if (wordMatch) {
     const word = wordMatch[1].toLowerCase();
     if (ABBREVIATIONS.has(word)) {
@@ -67,12 +79,12 @@ function isSentenceEndingPeriod(text: string, idx: number): boolean {
     }
   }
 
-  // Check for decimal numbers
-  if (/\d$/.test(beforePeriod) && /^\s*\d/.test(afterPeriod)) {
+  // Check for decimal numbers (only applies to periods)
+  if (/\d$/.test(beforePunctuation) && /^\s*\d/.test(afterPunctuation)) {
     return false;
   }
 
-  // Check for ellipsis
+  // Check for ellipsis (only applies to periods)
   if (text.slice(idx - 2, idx) === '..' || text.slice(idx + 1, idx + 3) === '..') {
     return false;
   }
@@ -221,11 +233,11 @@ function computeBoundingRects(
  *
  * Sentence boundaries:
  * - A sentence ENDS at:
- *   1. A period (.) followed by whitespace and a capital letter
+ *   1. A period (.), question mark (?), or exclamation point (!) followed by whitespace and a capital letter
  *   2. The end of a paragraph (before a section title or large gap)
  * - A sentence STARTS at:
  *   1. The beginning of a paragraph
- *   2. Right after the previous sentence's period
+ *   2. Right after the previous sentence's ending punctuation
  */
 export function segmentSentences(textItems: TextItem[], pageNumber: number): Sentence[] {
   if (textItems.length === 0) return [];
@@ -264,7 +276,7 @@ export function segmentSentences(textItems: TextItem[], pageNumber: number): Sen
   const sentenceEnds: number[] = [];
 
   for (let i = 0; i < fullText.length; i++) {
-    if (isSentenceEndingPeriod(fullText, i)) {
+    if (isSentenceEnding(fullText, i)) {
       sentenceEnds.push(i);
     }
   }

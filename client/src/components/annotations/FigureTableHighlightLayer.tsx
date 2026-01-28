@@ -6,6 +6,7 @@ interface FigureTableHighlightProps {
   figureTable: FigureTable;
   isHovered: boolean;
   isSelected: boolean;
+  isHighlightedFromNav: boolean; // Highlighted from navigation (e.g., jumping from paper detail page)
   scale: number;
   hasDiscussions: boolean;
   isAnnotationMode: boolean;
@@ -23,6 +24,7 @@ const FigureTableHighlight = memo(function FigureTableHighlight({
   figureTable,
   isHovered,
   isSelected,
+  isHighlightedFromNav,
   scale,
   hasDiscussions,
   isAnnotationMode,
@@ -32,7 +34,7 @@ const FigureTableHighlight = memo(function FigureTableHighlight({
   onClick,
   onDelete,
 }: FigureTableHighlightProps) {
-  const showHighlight = isHovered || isSelected;
+  const showHighlight = isHovered || isSelected || isHighlightedFromNav;
 
   // Use different colors for figures vs tables, and annotation mode vs discussion mode
   const getHighlightColor = () => {
@@ -70,13 +72,14 @@ const FigureTableHighlight = memo(function FigureTableHighlight({
             width={rect.width * scale}
             height={rect.height * scale}
             fill={highlightColor}
-            fillOpacity={isSelected ? 0.15 : 0.08}
-            stroke={highlightColor}
-            strokeWidth={isSelected ? 3 : 2}
-            strokeDasharray={isSelected ? 'none' : '8,4'}
-            strokeOpacity={isSelected ? 1 : 0.7}
+            fillOpacity={isHighlightedFromNav ? 0.25 : isSelected ? 0.15 : 0.08}
+            stroke={isHighlightedFromNav ? '#8B5CF6' : highlightColor}
+            strokeWidth={isHighlightedFromNav ? 4 : isSelected ? 3 : 2}
+            strokeDasharray={isSelected || isHighlightedFromNav ? 'none' : '8,4'}
+            strokeOpacity={isSelected || isHighlightedFromNav ? 1 : 0.7}
             rx={4}
             style={{ pointerEvents: 'none' }}
+            className={isHighlightedFromNav ? 'animate-pulse' : ''}
           />
 
           {/* Label badge */}
@@ -194,6 +197,7 @@ interface FigureTableHighlightLayerProps {
   figureTables: FigureTable[];
   hoveredId: string | null;
   selectedId: string | null;
+  highlightedId?: string | null; // ID of region to highlight from navigation
   scale: number;
   onHover: (id: string | null) => void;
   onClick: (id: string) => void;
@@ -211,6 +215,7 @@ export const FigureTableHighlightLayer = memo(function FigureTableHighlightLayer
   figureTables,
   hoveredId,
   selectedId,
+  highlightedId,
   scale,
   onHover,
   onClick,
@@ -249,6 +254,7 @@ export const FigureTableHighlightLayer = memo(function FigureTableHighlightLayer
       {figureTables.map((ft) => {
         const isHovered = ft.id === hoveredId;
         const isSelected = ft.id === selectedId;
+        const isHighlightedFromNav = ft.id === highlightedId;
         const discussionCount = discussionCounts.get(ft.id) || 0;
 
         return (
@@ -257,6 +263,7 @@ export const FigureTableHighlightLayer = memo(function FigureTableHighlightLayer
             figureTable={ft}
             isHovered={isHovered}
             isSelected={isSelected}
+            isHighlightedFromNav={isHighlightedFromNav}
             scale={scale}
             hasDiscussions={discussionCount > 0}
             isAnnotationMode={isAnnotationMode}

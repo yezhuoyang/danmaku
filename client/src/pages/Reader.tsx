@@ -10,7 +10,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuLabel,
 } from "@/components/ui/dropdown-menu";
-import { ArrowLeft, MessageSquare, User, LogOut, Upload, Bot, Check, ChevronDown, Plus, Key, Zap, Ban } from "lucide-react";
+import { ArrowLeft, MessageSquare, User, LogOut, Upload, Bot, Check, ChevronDown, Plus, Key, Zap, Ban, Loader2, BookOpen } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { PdfAnnotationViewer } from "@/components/PdfAnnotationViewer";
 import { Input } from "@/components/ui/input";
@@ -23,14 +23,21 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import * as api from "../lib/api";
-import type { PaperWithStats, Annotation, FigureTableRegion, AiAgentHistory, AiSentenceAnalysisData, AiFigureTableAnalysisData } from "../../../shared/types";
+import type { PaperWithStats, Annotation, FigureTableRegion, AiAgentHistory, AiSentenceAnalysisData, AiFigureTableAnalysisData, BackgroundReadingJob } from "../../../shared/types";
 import type { SentenceAnnotation } from "@/components/annotations/types";
 import { toast } from "sonner";
+import { getCachedPdf, cachePdf, calculatePdfHash, verifyPdfHash } from "../lib/pdf-cache";
 
 export default function Reader() {
   const [, params] = useRoute("/paper/:id/read");
   const paperId = params?.id;
   const [, setLocation] = useLocation();
+
+  // Parse URL search params for navigation
+  const searchParams = new URLSearchParams(window.location.search);
+  const highlightType = searchParams.get('highlight') as 'figure' | 'table' | null;
+  const initialPage = searchParams.get('page') ? parseInt(searchParams.get('page')!) : undefined;
+  const highlightRegionId = searchParams.get('regionId');
 
   const { user, logout, isLoading: authLoading } = useAuth();
   const [paper, setPaper] = useState<PaperWithStats | null>(null);
@@ -42,6 +49,8 @@ export default function Reader() {
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [showPdfDialog, setShowPdfDialog] = useState(false);
   const [localPdfFile, setLocalPdfFile] = useState<File | null>(null);
+  const [isCheckingCache, setIsCheckingCache] = useState(false);
+  const [hashMismatch, setHashMismatch] = useState(false);
 
   // Figure/Table regions state
   const [figureTableRegions, setFigureTableRegions] = useState<FigureTableRegion[]>([]);
@@ -50,6 +59,9 @@ export default function Reader() {
   const [aiAgentHistories, setAiAgentHistories] = useState<AiAgentHistory[]>([]);
   const [activeSession, setActiveSession] = useState<AiAgentHistory | null>(null);
   const [isCreatingSession, setIsCreatingSession] = useState(false);
+
+  // Background reading job state
+  const [backgroundJob, setBackgroundJob] = useState<BackgroundReadingJob | null>(null);
 
   useEffect(() => {
     if (!paperId) return;
@@ -122,10 +134,66 @@ export default function Reader() {
 
         // Determine PDF URL
         if (paperResult.paper.arxivId) {
-          // ArXiv paper - use our proxy to avoid CORS issues
-          setPdfUrl(`/api/papers/arxiv/${paperResult.paper.arxivId}/pdf`);
+          // ArXiv paper - use arxivId as cache key (prefixed to avoid collision with local hashes)
+          const arxivCacheKey = `arxiv:${paperResult.paper.arxivId}`;
+          setIsCheckingCache(true);
+          try {
+            const cachedPdf = await getCachedPdf(arxivCacheKey);
+            if (cachedPdf) {
+              console.log('ArXiv PDF loaded from cache');
+              const url = URL.createObjectURL(cachedPdf);
+              setPdfUrl(url);
+              toast.success('PDF loaded from local cache');
+              setIsCheckingCache(false);
+            } else {
+              // Not cached - fetch from proxy and cache it
+              setIsCheckingCache(false);
+              const proxyUrl = `/api/papers/arxiv/${paperResult.paper.arxivId}/pdf`;
+              setPdfUrl(proxyUrl);
+              // Cache the ArXiv PDF in background after it loads
+              fetch(proxyUrl)
+                .then(res => res.blob())
+                .then(async (blob) => {
+                  await cachePdf(arxivCacheKey, blob, `${paperResult.paper.arxivId}.pdf`);
+                  console.log('ArXiv PDF cached for offline access');
+                })
+                .catch(err => console.error('Failed to cache ArXiv PDF:', err));
+            }
+          } catch (error) {
+            console.error('Error checking ArXiv PDF cache:', error);
+            setIsCheckingCache(false);
+            setPdfUrl(`/api/papers/arxiv/${paperResult.paper.arxivId}/pdf`);
+          }
+        } else if (paperResult.paper.contentHash) {
+          // Local paper - check IndexedDB cache first
+          setIsCheckingCache(true);
+          try {
+            const cachedPdf = await getCachedPdf(paperResult.paper.contentHash);
+            if (cachedPdf) {
+              // Found in cache - verify hash still matches
+              const isValid = await verifyPdfHash(cachedPdf, paperResult.paper.contentHash);
+              if (isValid) {
+                console.log('PDF loaded from cache');
+                const url = URL.createObjectURL(cachedPdf);
+                setPdfUrl(url);
+                toast.success('PDF loaded from local cache');
+              } else {
+                // Cache corrupted, need re-upload
+                console.warn('Cached PDF hash mismatch, requiring re-upload');
+                setShowPdfDialog(true);
+              }
+            } else {
+              // Not in cache - show upload dialog
+              setShowPdfDialog(true);
+            }
+          } catch (error) {
+            console.error('Error checking PDF cache:', error);
+            setShowPdfDialog(true);
+          } finally {
+            setIsCheckingCache(false);
+          }
         } else {
-          // Local paper - need user to provide the PDF
+          // Local paper without contentHash (legacy) - need user to provide the PDF
           setShowPdfDialog(true);
         }
       } catch (error) {
@@ -155,9 +223,59 @@ export default function Reader() {
     updateSession();
   }, [paperId, pdfUrl]);
 
-  const handleLocalPdfSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Fetch and poll background reading jobs
+  useEffect(() => {
+    if (!paperId || !user) return;
+
+    const fetchBackgroundJob = async () => {
+      try {
+        const response = await api.getPaperBackgroundJobs(paperId);
+        // Find the active job (running or pending)
+        const activeJob = response.jobs.find(
+          j => j.status === 'pending' || j.status === 'running'
+        );
+        setBackgroundJob(activeJob || null);
+      } catch (error) {
+        console.error("Failed to fetch background jobs:", error);
+      }
+    };
+
+    fetchBackgroundJob();
+
+    // Poll for updates if there's an active job
+    const interval = setInterval(() => {
+      if (backgroundJob?.status === 'pending' || backgroundJob?.status === 'running') {
+        fetchBackgroundJob();
+      }
+    }, 3000);
+
+    return () => clearInterval(interval);
+  }, [paperId, user, backgroundJob?.status]);
+
+  const handleLocalPdfSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file && file.type === "application/pdf") {
+      setHashMismatch(false);
+
+      // If paper has a contentHash, verify the uploaded PDF matches
+      if (paper?.contentHash) {
+        try {
+          const uploadedHash = await calculatePdfHash(file);
+          if (uploadedHash !== paper.contentHash) {
+            setHashMismatch(true);
+            toast.error('This PDF does not match the original. Please upload the same PDF file.');
+            return;
+          }
+
+          // Hash matches - cache the PDF for future use
+          await cachePdf(paper.contentHash, file, file.name);
+          toast.success('PDF verified and cached for offline access');
+        } catch (error) {
+          console.error('Error verifying/caching PDF:', error);
+          // Continue anyway - caching is best-effort
+        }
+      }
+
       setLocalPdfFile(file);
       // Create a blob URL for the local file
       const url = URL.createObjectURL(file);
@@ -271,6 +389,7 @@ export default function Reader() {
     label: string;
     caption?: string;
     boundingRect: { x: number; y: number; width: number; height: number };
+    imageData?: string;
   }) => {
     if (!paperId || !user) {
       toast.error("Please login to create regions");
@@ -438,12 +557,12 @@ export default function Reader() {
   // Check if current user is the paper uploader
   const isUploader = user?.id === paper?.addedBy;
 
-  if (isLoading) {
+  if (isLoading || isCheckingCache) {
     return (
       <div className="min-h-screen bg-slate-900 flex items-center justify-center">
         <div className="text-white/50 flex flex-col items-center gap-3">
           <div className="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
-          <span className="text-sm">Loading paper...</span>
+          <span className="text-sm">{isCheckingCache ? 'Checking local cache...' : 'Loading paper...'}</span>
         </div>
       </div>
     );
@@ -598,6 +717,32 @@ export default function Reader() {
                 )}
               </DropdownMenuContent>
             </DropdownMenu>
+
+            {/* Background Reading Progress Indicator */}
+            {backgroundJob && (backgroundJob.status === 'pending' || backgroundJob.status === 'running') && (
+              <>
+                <div className="h-6 w-px bg-slate-600" />
+                <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-blue-900/50 border border-blue-700/50">
+                  <Loader2 className="w-4 h-4 text-blue-400 animate-spin" />
+                  <div className="flex flex-col">
+                    <span className="text-xs font-medium text-blue-300">
+                      Background Reading
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <div className="w-20 h-1.5 bg-slate-700 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-blue-500 transition-all"
+                          style={{ width: `${backgroundJob.progress.percentComplete}%` }}
+                        />
+                      </div>
+                      <span className="text-[10px] text-blue-400/70">
+                        {backgroundJob.progress.currentPage}/{backgroundJob.progress.totalPages} pages
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
 
           {authLoading ? (
@@ -653,6 +798,9 @@ export default function Reader() {
             activeSession={activeSession}
             onAiAnalysisSaved={handleAiAnalysisSaved}
             onSessionUpdated={setActiveSession}
+            backgroundJob={backgroundJob}
+            initialPage={initialPage}
+            highlightRegionId={highlightRegionId || undefined}
           />
         ) : (
           <div className="flex items-center justify-center h-full">
@@ -674,7 +822,7 @@ export default function Reader() {
             <DialogTitle>Select PDF File</DialogTitle>
             <DialogDescription>
               This paper was added from a local file. Please select the same PDF file
-              to continue reading.
+              to continue reading. The file will be cached locally for future visits.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
@@ -687,6 +835,17 @@ export default function Reader() {
                 onChange={handleLocalPdfSelect}
               />
             </div>
+            {hashMismatch && (
+              <div className="p-3 bg-red-50 dark:bg-red-950 border border-red-200 dark:border-red-800 rounded-md">
+                <p className="text-sm text-red-600 dark:text-red-400 font-medium">
+                  PDF does not match the original file
+                </p>
+                <p className="text-xs text-red-500 dark:text-red-500 mt-1">
+                  Please upload the exact same PDF that was originally used for this paper.
+                  All annotations and AI analysis are tied to the original file.
+                </p>
+              </div>
+            )}
             {paper.contentHash && (
               <p className="text-xs text-muted-foreground">
                 Expected file hash: {paper.contentHash.substring(0, 16)}...

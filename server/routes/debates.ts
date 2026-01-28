@@ -180,6 +180,8 @@ function dbRowToDebateSession(row: any, papers?: any[]): DebateSession {
     backgroundKnowledge: row.background_knowledge || undefined,
     paperIds: JSON.parse(row.paper_ids || '[]'),
     papers: papers,
+    papersRead: row.papers_read || 0,
+    readingStatus: row.reading_status || 'pending',
     conclusion: row.conclusion || undefined,
     winner: row.winner || undefined,
     concludedAt: row.concluded_at || undefined,
@@ -344,13 +346,18 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
     const id = uuidv4();
     const now = Math.floor(Date.now() / 1000);
 
+    // Determine reading status based on readPapersFirst flag
+    const hasPapers = body.paperIds && body.paperIds.length > 0;
+    const readingStatus = hasPapers && body.readPapersFirst ? 'pending' : 'skipped';
+
     db.prepare(`
       INSERT INTO debate_sessions (
         id, user_id, title, topic, status,
         affirmative_config, negative_config, judge_config,
         messages, max_turns, background_knowledge, paper_ids,
+        reading_status, papers_read,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, 'setup', ?, ?, ?, '[]', ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, 'setup', ?, ?, ?, '[]', ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       user.id,
@@ -362,6 +369,8 @@ router.post('/', requireAuth, async (req: Request, res: Response) => {
       body.maxTurns || 20,
       body.backgroundKnowledge || null,
       JSON.stringify(body.paperIds || []),
+      readingStatus,
+      0,
       now,
       now
     );
@@ -1036,6 +1045,135 @@ router.post('/:id/conclude', requireAuth, async (req: Request, res: Response) =>
   } catch (error) {
     console.error('Conclude debate error:', error);
     res.status(500).json({ error: 'Internal Server Error', message: 'Failed to conclude debate' });
+  }
+});
+
+// POST /api/debates/:id/read-papers - Have agents read linked papers before debate
+router.post('/:id/read-papers', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    const { id } = req.params;
+
+    const row = db.prepare(`
+      SELECT * FROM debate_sessions WHERE id = ? AND user_id = ?
+    `).get(id, user.id) as any;
+
+    if (!row) {
+      return res.status(404).json({ error: 'Not Found', message: 'Debate not found' });
+    }
+
+    if (row.status !== 'setup') {
+      return res.status(400).json({ error: 'Bad Request', message: 'Can only read papers during setup phase' });
+    }
+
+    const paperIds: string[] = JSON.parse(row.paper_ids || '[]');
+    if (paperIds.length === 0) {
+      return res.status(400).json({ error: 'Bad Request', message: 'No papers linked to this debate' });
+    }
+
+    // Check API keys are set
+    const affirmativeConfig = JSON.parse(row.affirmative_config);
+    const negativeConfig = JSON.parse(row.negative_config);
+
+    if (!affirmativeConfig.apiKeyEncrypted || !negativeConfig.apiKeyEncrypted) {
+      return res.status(400).json({ error: 'Bad Request', message: 'API keys must be set for both agents' });
+    }
+
+    // Update reading status
+    db.prepare(`
+      UPDATE debate_sessions SET reading_status = 'reading', updated_at = ? WHERE id = ?
+    `).run(Math.floor(Date.now() / 1000), id);
+
+    // Get papers info
+    const papers = db.prepare(`
+      SELECT id, title, authors, abstract
+      FROM papers
+      WHERE id IN (${paperIds.map(() => '?').join(',')})
+    `).all(...paperIds) as any[];
+
+    // Build context from papers
+    let paperContext = '\n\n=== REFERENCE PAPERS ===\n';
+    papers.forEach((paper, index) => {
+      const authors = JSON.parse(paper.authors || '[]');
+      paperContext += `\n[${index + 1}] "${paper.title}"\n`;
+      paperContext += `Authors: ${authors.join(', ')}\n`;
+      if (paper.abstract) {
+        paperContext += `Abstract: ${paper.abstract}\n`;
+      }
+    });
+    paperContext += '\n=== END REFERENCE PAPERS ===\n';
+    paperContext += '\nYou have read the above papers. Use them as references in your arguments. Cite using [1], [2], etc.\n';
+
+    // Append paper context to both agent system prompts
+    const updatedAffirmativeConfig = {
+      ...affirmativeConfig,
+      systemPrompt: affirmativeConfig.systemPrompt + paperContext,
+    };
+    const updatedNegativeConfig = {
+      ...negativeConfig,
+      systemPrompt: negativeConfig.systemPrompt + paperContext,
+    };
+
+    // Update debate session with enhanced prompts and reading status
+    const now = Math.floor(Date.now() / 1000);
+    db.prepare(`
+      UPDATE debate_sessions
+      SET affirmative_config = ?, negative_config = ?, papers_read = ?, reading_status = 'completed', updated_at = ?
+      WHERE id = ?
+    `).run(
+      JSON.stringify(updatedAffirmativeConfig),
+      JSON.stringify(updatedNegativeConfig),
+      papers.length,
+      now,
+      id
+    );
+
+    // Return updated debate
+    const updated = db.prepare('SELECT * FROM debate_sessions WHERE id = ?').get(id) as any;
+    const debate = dbRowToDebateSession(updated);
+
+    // Populate papers
+    debate.papers = papers.map(p => ({
+      id: p.id,
+      title: p.title,
+      authors: JSON.parse(p.authors || '[]'),
+      abstract: p.abstract,
+    }));
+
+    res.json({ debate });
+  } catch (error) {
+    console.error('Read papers error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to read papers' });
+  }
+});
+
+// GET /api/debates/:id/reading-progress - Check paper reading progress
+router.get('/:id/reading-progress', requireAuth, (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    const { id } = req.params;
+
+    const row = db.prepare(`
+      SELECT reading_status, papers_read, paper_ids
+      FROM debate_sessions
+      WHERE id = ? AND user_id = ?
+    `).get(id, user.id) as any;
+
+    if (!row) {
+      return res.status(404).json({ error: 'Not Found', message: 'Debate not found' });
+    }
+
+    const paperIds: string[] = JSON.parse(row.paper_ids || '[]');
+
+    res.json({
+      status: row.reading_status || 'pending',
+      papersRead: row.papers_read || 0,
+      totalPapers: paperIds.length,
+      progress: paperIds.length > 0 ? ((row.papers_read || 0) / paperIds.length) * 100 : 0,
+    });
+  } catch (error) {
+    console.error('Get reading progress error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to get reading progress' });
   }
 });
 

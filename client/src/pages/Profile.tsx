@@ -704,6 +704,12 @@ export default function Profile() {
                       Manage AI Sessions
                     </Button>
                   </Link>
+                  <Link href="/my-background-jobs">
+                    <Button variant="outline" size="sm">
+                      <BookOpen className="w-4 h-4 mr-2" />
+                      Background Reading
+                    </Button>
+                  </Link>
                 </div>
               </CardContent>
             </Card>

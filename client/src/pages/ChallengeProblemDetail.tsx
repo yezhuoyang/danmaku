@@ -48,6 +48,7 @@ import {
   MessageSquare,
   GitBranch,
   Link as LinkIcon,
+  Link2,
   Plus,
   Edit,
   Trash,
@@ -57,6 +58,8 @@ import {
   Tag,
   Send,
   FileText,
+  ArrowRight,
+  Loader2,
 } from "lucide-react";
 import * as api from "@/lib/api";
 import type {
@@ -65,6 +68,8 @@ import type {
   ChallengeProblemStatus,
   CreateChallengeProblemRequest,
   CreateChallengeCommentRequest,
+  ChallengeProblemLink,
+  CrossPaperRelationship,
 } from "../../../shared/types";
 
 const STATUS_CONFIG: Record<string, { label: string; color: string; icon: React.ReactNode }> = {
@@ -130,6 +135,22 @@ export default function ChallengeProblemDetail() {
   // Link paper dialog
   const [linkPaperDialogOpen, setLinkPaperDialogOpen] = useState(false);
 
+  // Cross-paper links
+  const [crossPaperLinks, setCrossPaperLinks] = useState<ChallengeProblemLink[]>([]);
+  const [linksLoading, setLinksLoading] = useState(false);
+  const [addLinkDialogOpen, setAddLinkDialogOpen] = useState(false);
+  const [newLinkTargetId, setNewLinkTargetId] = useState('');
+  const [newLinkRelationship, setNewLinkRelationship] = useState<CrossPaperRelationship>('related');
+  const [addingLink, setAddingLink] = useState(false);
+
+  // AI Paper Search
+  const [paperSearchDialogOpen, setPaperSearchDialogOpen] = useState(false);
+  const [searchingPapers, setSearchingPapers] = useState(false);
+  const [paperSearchResults, setPaperSearchResults] = useState<api.PaperSearchResult[]>([]);
+  const [paperSearchError, setPaperSearchError] = useState<string | null>(null);
+  const [aiApiKey, setAiApiKey] = useState(() => sessionStorage.getItem('openai_api_key') || '');
+  const [showApiKeyInput, setShowApiKeyInput] = useState(false);
+
   // Fetch problem details
   useEffect(() => {
     if (!problemId) return;
@@ -148,6 +169,17 @@ export default function ChallengeProblemDetail() {
       })
       .finally(() => setLoading(false));
   }, [problemId, setLocation]);
+
+  // Fetch cross-paper links
+  useEffect(() => {
+    if (!problemId) return;
+
+    setLinksLoading(true);
+    api.getChallengeProblemLinks(problemId)
+      .then(({ links }) => setCrossPaperLinks(links))
+      .catch(console.error)
+      .finally(() => setLinksLoading(false));
+  }, [problemId]);
 
   const handleAddSubQuestion = async () => {
     if (!subQuestionTitle.trim()) {
@@ -234,6 +266,64 @@ export default function ChallengeProblemDetail() {
     }
   };
 
+  const handleAddCrossPaperLink = async () => {
+    if (!problem || !newLinkTargetId.trim()) return;
+
+    setAddingLink(true);
+    try {
+      await api.createChallengeProblemLink(problem.id, {
+        targetId: newLinkTargetId.trim(),
+        relationship: newLinkRelationship,
+      });
+      toast.success("Link added!");
+
+      // Refresh links
+      const { links } = await api.getChallengeProblemLinks(problem.id);
+      setCrossPaperLinks(links);
+      setAddLinkDialogOpen(false);
+      setNewLinkTargetId('');
+      setNewLinkRelationship('related');
+    } catch (error: any) {
+      toast.error(error.message || "Failed to add link");
+    } finally {
+      setAddingLink(false);
+    }
+  };
+
+  const handleDeleteCrossPaperLink = async (linkId: string) => {
+    if (!confirm("Remove this relationship?")) return;
+
+    try {
+      await api.deleteChallengeProblemLink(linkId);
+      setCrossPaperLinks(prev => prev.filter(l => l.id !== linkId));
+      toast.success("Link removed");
+    } catch (error: any) {
+      toast.error(error.message || "Failed to remove link");
+    }
+  };
+
+  const getRelationshipLabel = (rel: CrossPaperRelationship) => {
+    const labels: Record<CrossPaperRelationship, string> = {
+      extends: 'Extends',
+      contradicts: 'Contradicts',
+      builds_on: 'Builds on',
+      supersedes: 'Supersedes',
+      related: 'Related to',
+    };
+    return labels[rel] || rel;
+  };
+
+  const getRelationshipColor = (rel: CrossPaperRelationship) => {
+    const colors: Record<CrossPaperRelationship, string> = {
+      extends: 'bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400',
+      contradicts: 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400',
+      builds_on: 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400',
+      supersedes: 'bg-purple-100 text-purple-800 dark:bg-purple-900/30 dark:text-purple-400',
+      related: 'bg-gray-100 text-gray-800 dark:bg-gray-900/30 dark:text-gray-400',
+    };
+    return colors[rel] || colors.related;
+  };
+
   const handleDeleteComment = async (commentId: string) => {
     try {
       await api.deleteChallengeComment(commentId);
@@ -248,6 +338,62 @@ export default function ChallengeProblemDetail() {
   const openAddSubDialog = (parentId?: string) => {
     setParentIdForSub(parentId || null);
     setAddSubDialogOpen(true);
+  };
+
+  // AI Paper Search handler
+  const handleAISearch = async () => {
+    if (!problem) return;
+
+    const storedKey = sessionStorage.getItem('openai_api_key') || aiApiKey;
+    if (!storedKey) {
+      setPaperSearchDialogOpen(true);
+      setShowApiKeyInput(true);
+      setPaperSearchError("Please enter your OpenAI API key to search for papers");
+      return;
+    }
+
+    setSearchingPapers(true);
+    setPaperSearchError(null);
+    setPaperSearchResults([]);
+    setPaperSearchDialogOpen(true);
+    setShowApiKeyInput(false);
+
+    try {
+      const question = problem.title;
+      const context = [
+        problem.description,
+        problem.context,
+        problem.area ? `Research area: ${problem.area}` : '',
+      ].filter(Boolean).join('\n\n');
+
+      const response = await api.searchRelatedPapers({
+        question,
+        context: context || undefined,
+        apiKey: storedKey,
+        provider: 'openai',
+      });
+
+      if (!response.papers || response.papers.length === 0) {
+        setPaperSearchError("No related papers found. Try again later.");
+      } else {
+        setPaperSearchResults(response.papers);
+      }
+    } catch (error: any) {
+      console.error("Paper search error:", error);
+      setPaperSearchError(error.message || "Failed to search for papers");
+    } finally {
+      setSearchingPapers(false);
+    }
+  };
+
+  const handleSaveApiKeyAndSearch = () => {
+    if (!aiApiKey.trim()) {
+      toast.error("Please enter your API key");
+      return;
+    }
+    sessionStorage.setItem('openai_api_key', aiApiKey.trim());
+    setShowApiKeyInput(false);
+    handleAISearch();
   };
 
   const getTimeAgo = (timestamp: number) => {
@@ -521,6 +667,19 @@ export default function ChallengeProblemDetail() {
                         Add Sub-Question
                       </Button>
                     )}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleAISearch}
+                      disabled={searchingPapers}
+                    >
+                      {searchingPapers ? (
+                        <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                      ) : (
+                        <Search className="h-4 w-4 mr-1" />
+                      )}
+                      AI Search Papers
+                    </Button>
                     {isOwner && (
                       <Button variant="outline" size="sm" onClick={() => setLinkPaperDialogOpen(true)}>
                         <FileText className="h-4 w-4 mr-1" />
@@ -545,10 +704,22 @@ export default function ChallengeProblemDetail() {
           </div>
         )}
 
-        {/* Main Content Grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Main Content */}
-          <div className="lg:col-span-2 space-y-6">
+        {/* Linked Research Ideas - Below Research Progress */}
+        {isQuestion && (
+          <div className="mb-6">
+            <LinkedIdeasPanel
+              questionId={problem.id}
+              currentUserId={user?.id}
+              onUpdate={async () => {
+                const { problem: updated } = await api.getChallengeProblem(problem.id);
+                setProblem(updated);
+              }}
+            />
+          </div>
+        )}
+
+        {/* Main Content - Single Column */}
+        <div className="space-y-6">
             {/* Comments Section */}
             <Card>
               <CardHeader>
@@ -616,55 +787,6 @@ export default function ChallengeProblemDetail() {
               </CardContent>
             </Card>
           </div>
-
-          {/* Sidebar */}
-          <div className="space-y-6">
-            {/* Linked Ideas (for questions) */}
-            {isQuestion && (
-              <LinkedIdeasPanel
-                questionId={problem.id}
-                currentUserId={user?.id}
-                onUpdate={async () => {
-                  const { problem: updated } = await api.getChallengeProblem(problem.id);
-                  setProblem(updated);
-                }}
-              />
-            )}
-
-            {/* Stats */}
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm">Stats</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Upvotes</span>
-                  <span className="font-medium">{problem.upvotes}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Downvotes</span>
-                  <span className="font-medium">{problem.downvotes}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Comments</span>
-                  <span className="font-medium">{problem.commentCount}</span>
-                </div>
-                {isQuestion && (
-                  <>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Sub-questions</span>
-                      <span className="font-medium">{problem.childCount}</span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-muted-foreground">Linked ideas</span>
-                      <span className="font-medium">{problem.linkedIdeaCount}</span>
-                    </div>
-                  </>
-                )}
-              </CardContent>
-            </Card>
-          </div>
-        </div>
       </main>
 
       {/* Add Sub-Question Dialog */}
@@ -772,6 +894,235 @@ export default function ChallengeProblemDetail() {
           setProblem(updated);
         }}
       />
+
+      {/* Add Cross-Paper Link Dialog */}
+      <Dialog open={addLinkDialogOpen} onOpenChange={setAddLinkDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Link2 className="h-5 w-5" />
+              Add Related Problem
+            </DialogTitle>
+            <DialogDescription>
+              Link this problem to another challenge problem to show cross-paper relationships.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="targetProblemId">Problem ID</Label>
+              <Input
+                id="targetProblemId"
+                value={newLinkTargetId}
+                onChange={(e) => setNewLinkTargetId(e.target.value)}
+                placeholder="Enter the target problem ID"
+              />
+              <p className="text-xs text-muted-foreground">
+                Copy the problem ID from the URL of the related challenge problem
+              </p>
+            </div>
+            <div className="space-y-2">
+              <Label>Relationship Type</Label>
+              <Select
+                value={newLinkRelationship}
+                onValueChange={(v) => setNewLinkRelationship(v as CrossPaperRelationship)}
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="extends">
+                    <div className="flex items-center gap-2">
+                      <ArrowRight className="h-3 w-3" />
+                      Extends - builds on and extends
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="builds_on">
+                    <div className="flex items-center gap-2">
+                      <ArrowRight className="h-3 w-3" />
+                      Builds On - uses as foundation
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="contradicts">
+                    <div className="flex items-center gap-2">
+                      <ArrowRight className="h-3 w-3" />
+                      Contradicts - challenges findings
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="supersedes">
+                    <div className="flex items-center gap-2">
+                      <ArrowRight className="h-3 w-3" />
+                      Supersedes - makes obsolete
+                    </div>
+                  </SelectItem>
+                  <SelectItem value="related">
+                    <div className="flex items-center gap-2">
+                      <ArrowRight className="h-3 w-3" />
+                      Related - general relationship
+                    </div>
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setAddLinkDialogOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleAddCrossPaperLink}
+              disabled={!newLinkTargetId.trim() || addingLink}
+            >
+              {addingLink ? "Adding..." : "Add Link"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* AI Paper Search Dialog */}
+      <Dialog open={paperSearchDialogOpen} onOpenChange={setPaperSearchDialogOpen}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-hidden flex flex-col">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Search className="h-5 w-5" />
+              AI Paper Search Results
+            </DialogTitle>
+            <DialogDescription>
+              Papers related to "{problem?.title}"
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex-1 overflow-y-auto py-4">
+            {showApiKeyInput ? (
+              <div className="space-y-4 py-4">
+                <div className="text-center">
+                  <p className="text-sm text-muted-foreground mb-4">
+                    Enter your OpenAI API key to search for related papers using AI.
+                  </p>
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="aiApiKey">OpenAI API Key</Label>
+                  <Input
+                    id="aiApiKey"
+                    type="password"
+                    value={aiApiKey}
+                    onChange={(e) => setAiApiKey(e.target.value)}
+                    placeholder="sk-..."
+                    className="font-mono text-sm"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Your API key is stored locally in your browser session.
+                  </p>
+                </div>
+                <Button
+                  onClick={handleSaveApiKeyAndSearch}
+                  disabled={!aiApiKey.trim()}
+                  className="w-full"
+                >
+                  <Search className="h-4 w-4 mr-2" />
+                  Search Papers
+                </Button>
+              </div>
+            ) : searchingPapers ? (
+              <div className="flex flex-col items-center justify-center py-8">
+                <Loader2 className="h-8 w-8 animate-spin text-indigo-600 mb-3" />
+                <p className="text-sm text-muted-foreground">Searching for related papers...</p>
+                <p className="text-xs text-muted-foreground mt-1">This may take a moment</p>
+              </div>
+            ) : paperSearchError ? (
+              <div className="text-center py-8">
+                <p className="text-sm text-red-500">{paperSearchError}</p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="mt-4"
+                  onClick={handleAISearch}
+                >
+                  Try Again
+                </Button>
+              </div>
+            ) : paperSearchResults.length > 0 ? (
+              <div className="space-y-3">
+                {paperSearchResults.map((paper, index) => (
+                  <Card key={index} className="p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex-1 min-w-0">
+                        <h4 className="font-medium text-sm line-clamp-2">{paper.title}</h4>
+                        {paper.authors && (
+                          <p className="text-xs text-muted-foreground mt-1 line-clamp-1">
+                            {Array.isArray(paper.authors)
+                              ? paper.authors.slice(0, 3).join(", ") + (paper.authors.length > 3 ? ` +${paper.authors.length - 3} more` : "")
+                              : String(paper.authors)}
+                          </p>
+                        )}
+                        {paper.abstract && (
+                          <p className="text-xs text-muted-foreground mt-2 line-clamp-3">
+                            {paper.abstract}
+                          </p>
+                        )}
+                        <div className="flex items-center gap-2 mt-2">
+                          {paper.year && (
+                            <Badge variant="outline" className="text-xs">
+                              {paper.year}
+                            </Badge>
+                          )}
+                          {paper.arxivId && (
+                            <Badge variant="secondary" className="text-xs">
+                              arXiv: {paper.arxivId}
+                            </Badge>
+                          )}
+                          {paper.relevanceScore && (
+                            <Badge variant="outline" className="text-xs bg-green-50 text-green-700 dark:bg-green-900/20 dark:text-green-400">
+                              {Math.round(paper.relevanceScore * 100)}% relevant
+                            </Badge>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex flex-col gap-1">
+                        {paper.url && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="text-xs"
+                            onClick={() => window.open(paper.url, '_blank')}
+                          >
+                            <ExternalLink className="h-3 w-3 mr-1" />
+                            View
+                          </Button>
+                        )}
+                        {paper.existsInLibrary && paper.paperId && (
+                          <Link href={`/paper/${paper.paperId}`}>
+                            <Button variant="secondary" size="sm" className="text-xs w-full">
+                              <FileText className="h-3 w-3 mr-1" />
+                              Open
+                            </Button>
+                          </Link>
+                        )}
+                      </div>
+                    </div>
+                    {paper.existsInLibrary && (
+                      <div className="mt-2 pt-2 border-t">
+                        <Badge className="text-xs bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400">
+                          Already in your library
+                        </Badge>
+                      </div>
+                    )}
+                  </Card>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-8">
+                <p className="text-sm text-muted-foreground">No results yet</p>
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPaperSearchDialogOpen(false)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

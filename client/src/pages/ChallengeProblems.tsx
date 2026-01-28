@@ -33,17 +33,25 @@ import {
   CheckCircle2,
   Clock,
   Tag,
+  LayoutGrid,
+  GitBranch,
+  Sparkles,
+  Loader2,
+  Trophy,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
 import { ChallengeProblemCard } from "@/components/ChallengeProblemCard";
+import { ResearchGitTree } from "@/components/ResearchGitTree";
 import * as api from "@/lib/api";
 import type {
   ChallengeProblem,
   ChallengeProblemType,
   ChallengeProblemStatus,
   CreateChallengeProblemRequest,
+  PromotionSuggestion,
+  ChallengeCurationJob,
 } from "../../../shared/types";
 
 export default function ChallengeProblems() {
@@ -64,6 +72,7 @@ export default function ChallengeProblems() {
   const [statusFilter, setStatusFilter] = useState<ChallengeProblemStatus | "all">("all");
   const [areaFilter, setAreaFilter] = useState<string>("all");
   const [sortBy, setSortBy] = useState<"recent" | "popular" | "most_discussed">("recent");
+  const [viewMode, setViewMode] = useState<"grid" | "tree">("grid");
 
   // Create dialog
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
@@ -80,6 +89,12 @@ export default function ChallengeProblems() {
   const [createExpectedOutcome, setCreateExpectedOutcome] = useState("");
   const [createFeasibility, setCreateFeasibility] = useState<"high" | "medium" | "low" | "">("medium");
   const [createNovelty, setCreateNovelty] = useState<"incremental" | "moderate" | "breakthrough" | "">("moderate");
+
+  // AI Curation
+  const [curationDialogOpen, setCurationDialogOpen] = useState(false);
+  const [curationLoading, setCurationLoading] = useState(false);
+  const [curationSuggestions, setCurationSuggestions] = useState<PromotionSuggestion[]>([]);
+  const [promotingIndex, setPromotingIndex] = useState<number | null>(null);
 
   // Fetch areas on mount
   useEffect(() => {
@@ -167,6 +182,47 @@ export default function ChallengeProblems() {
     }
   };
 
+  // AI Curation handlers
+  const handleRunCuration = async () => {
+    setCurationLoading(true);
+    setCurationDialogOpen(true);
+    try {
+      const { suggestions } = await api.getPromotionSuggestions({ limit: 20 });
+      setCurationSuggestions(suggestions);
+      if (suggestions.length === 0) {
+        toast.info("No new suggestions found. Generate more research ideas first!");
+      }
+    } catch (error: any) {
+      toast.error(error.message || "Failed to run AI curation");
+    } finally {
+      setCurationLoading(false);
+    }
+  };
+
+  const handlePromoteSuggestion = async (suggestion: PromotionSuggestion, index: number) => {
+    setPromotingIndex(index);
+    try {
+      await api.promoteIdeaToChallenge({
+        historyId: suggestion.historyId,
+        ideaId: suggestion.ideaId,
+        title: suggestion.title,
+        description: suggestion.description,
+        type: 'research_idea',
+      });
+      toast.success("Promoted to Challenge Problems!");
+      // Remove from suggestions
+      setCurationSuggestions(prev => prev.filter((_, i) => i !== index));
+      // Refresh the problems list
+      const { problems: data, total: t } = await api.getChallengeProblems({ limit: 20 });
+      setProblems(data);
+      setTotal(t);
+    } catch (error: any) {
+      toast.error(error.message || "Failed to promote suggestion");
+    } finally {
+      setPromotingIndex(null);
+    }
+  };
+
   const questionCount = problems.filter(p => p.type === "open_question").length;
   const ideaCount = problems.filter(p => p.type === "research_idea").length;
   const solvedCount = problems.filter(p => p.status === "solved").length;
@@ -192,6 +248,35 @@ export default function ChallengeProblems() {
           </div>
 
           <div className="flex items-center gap-2">
+            {/* Navigation to AI-generated insights */}
+            <Link href="/open-questions">
+              <Button variant="ghost" size="sm">
+                <HelpCircle className="h-4 w-4 mr-2" />
+                Open Questions
+              </Button>
+            </Link>
+            <Link href="/research-ideas">
+              <Button variant="ghost" size="sm">
+                <Lightbulb className="h-4 w-4 mr-2" />
+                Research Ideas
+              </Button>
+            </Link>
+
+            {/* AI Curation Button */}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleRunCuration}
+              disabled={curationLoading}
+            >
+              {curationLoading ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Sparkles className="h-4 w-4 mr-2" />
+              )}
+              AI Curation
+            </Button>
+
             {user && (
               <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
                 <DialogTrigger asChild>
@@ -491,6 +576,26 @@ export default function ChallengeProblems() {
                 <SelectItem value="most_discussed">Most Discussed</SelectItem>
               </SelectContent>
             </Select>
+
+            {/* View toggle */}
+            <div className="flex border rounded-lg overflow-hidden">
+              <Button
+                variant={viewMode === "grid" ? "default" : "ghost"}
+                size="sm"
+                className="rounded-none h-9"
+                onClick={() => setViewMode("grid")}
+              >
+                <LayoutGrid className="h-4 w-4" />
+              </Button>
+              <Button
+                variant={viewMode === "tree" ? "default" : "ghost"}
+                size="sm"
+                className="rounded-none h-9"
+                onClick={() => setViewMode("tree")}
+              >
+                <GitBranch className="h-4 w-4" />
+              </Button>
+            </div>
           </div>
         </div>
 
@@ -528,6 +633,13 @@ export default function ChallengeProblems() {
               )}
             </CardContent>
           </Card>
+        ) : viewMode === "tree" ? (
+          <ResearchGitTree
+            problems={problems}
+            title={`Research Problems (${total})`}
+            onSelectProblem={(id) => setLocation(`/challenge/${id}`)}
+            showCrossPaperLinks={true}
+          />
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {problems.map((problem) => (
@@ -558,6 +670,95 @@ export default function ChallengeProblems() {
           </div>
         )}
       </main>
+
+      {/* AI Curation Dialog */}
+      <Dialog open={curationDialogOpen} onOpenChange={setCurationDialogOpen}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Sparkles className="h-5 w-5 text-purple-500" />
+              AI-Suggested Challenge Problems
+            </DialogTitle>
+            <DialogDescription>
+              The AI has analyzed open questions and research ideas from all papers and suggests
+              the following items for promotion to Challenge Problems.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="py-4">
+            {curationLoading ? (
+              <div className="flex flex-col items-center justify-center py-12">
+                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground mb-4" />
+                <p className="text-sm text-muted-foreground">Analyzing research ideas...</p>
+              </div>
+            ) : curationSuggestions.length === 0 ? (
+              <div className="text-center py-8">
+                <Lightbulb className="h-12 w-12 mx-auto text-muted-foreground mb-4" />
+                <p className="font-medium">No New Suggestions</p>
+                <p className="text-sm text-muted-foreground mt-1">
+                  Generate more open questions or research ideas in papers to see AI suggestions here.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                <p className="text-sm text-muted-foreground">
+                  {curationSuggestions.length} suggestions found. Click "Promote" to add to Challenge Problems.
+                </p>
+                {curationSuggestions.map((suggestion, index) => (
+                  <Card key={suggestion.ideaId} className="overflow-hidden">
+                    <CardContent className="p-4">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-2">
+                            <Badge variant="secondary" className="text-xs">
+                              Score: {Math.round(suggestion.score * 100)}%
+                            </Badge>
+                            {suggestion.paperTitle && (
+                              <Badge variant="outline" className="text-xs truncate max-w-[200px]">
+                                {suggestion.paperTitle}
+                              </Badge>
+                            )}
+                          </div>
+                          <h4 className="font-medium text-sm mb-1 line-clamp-2">{suggestion.title}</h4>
+                          <p className="text-xs text-muted-foreground line-clamp-2">
+                            {suggestion.description}
+                          </p>
+                          {suggestion.reasoning && (
+                            <p className="text-xs text-blue-600 dark:text-blue-400 mt-2 italic">
+                              AI: {suggestion.reasoning}
+                            </p>
+                          )}
+                        </div>
+                        <Button
+                          size="sm"
+                          onClick={() => handlePromoteSuggestion(suggestion, index)}
+                          disabled={promotingIndex === index}
+                          className="flex-shrink-0"
+                        >
+                          {promotingIndex === index ? (
+                            <Loader2 className="h-4 w-4 animate-spin" />
+                          ) : (
+                            <>
+                              <Trophy className="h-3 w-3 mr-1" />
+                              Promote
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCurationDialogOpen(false)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

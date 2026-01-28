@@ -51,6 +51,26 @@ export function requireAuth(req: Request, res: Response, next: Function) {
   next();
 }
 
+// Middleware to require admin privileges
+export function requireAdmin(req: Request, res: Response, next: Function) {
+  const user = (req as any).user;
+  if (!user) {
+    return res.status(401).json({ error: 'Unauthorized', message: 'Please log in' });
+  }
+  if (!user.isAdmin) {
+    return res.status(403).json({ error: 'Forbidden', message: 'Admin privileges required' });
+  }
+  next();
+}
+
+// Middleware to optionally attach user (doesn't require auth)
+export function optionalAuth(req: Request, res: Response, next: Function) {
+  const sessionId = req.cookies?.[COOKIE_NAME];
+  const user = getUserFromSession(sessionId);
+  (req as any).user = user || null;
+  next();
+}
+
 // POST /api/auth/register
 router.post('/register', async (req: Request, res: Response) => {
   try {
@@ -1286,6 +1306,49 @@ router.delete('/notifications', (req: Request, res: Response) => {
   } catch (error) {
     console.error('Clear notifications error:', error);
     res.status(500).json({ error: 'Internal Server Error', message: 'Failed to clear notifications' });
+  }
+});
+
+// GET /api/auth/users/search - Search users by username or display name
+router.get('/users/search', (req: Request, res: Response) => {
+  try {
+    const user = (req as any).user;
+    if (!user) {
+      return res.status(401).json({ error: 'Unauthorized', message: 'Please log in' });
+    }
+
+    const { q, limit = 10 } = req.query;
+
+    if (!q || typeof q !== 'string' || q.trim().length < 2) {
+      return res.json({ users: [] });
+    }
+
+    const searchTerm = `%${q.trim()}%`;
+    const limitNum = Math.min(parseInt(limit as string) || 10, 20);
+
+    // Search by username or display name, exclude current user
+    const users = db.prepare(`
+      SELECT id, username, display_name, avatar
+      FROM users
+      WHERE (username LIKE ? OR display_name LIKE ?)
+        AND id != ?
+      ORDER BY
+        CASE WHEN username LIKE ? THEN 0 ELSE 1 END,
+        display_name
+      LIMIT ?
+    `).all(searchTerm, searchTerm, user.id, `${q.trim()}%`, limitNum) as any[];
+
+    res.json({
+      users: users.map(u => ({
+        id: u.id,
+        username: u.username,
+        displayName: u.display_name,
+        avatar: u.avatar || undefined,
+      }))
+    });
+  } catch (error) {
+    console.error('Search users error:', error);
+    res.status(500).json({ error: 'Internal Server Error', message: 'Failed to search users' });
   }
 });
 

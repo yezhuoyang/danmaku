@@ -20,6 +20,72 @@ import { AISessionSettingsPanel } from "./AISessionSettingsPanel";
 import { Annotation } from "@/components/annotations/AnnotationDanmaku";
 import type { AiAgentHistory } from "../../../../shared/types";
 import * as api from "@/lib/api";
+import ReactMarkdown from "react-markdown";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import "katex/dist/katex.min.css";
+
+// Markdown components for chat messages
+const chatMarkdownComponents = {
+  p: ({ children }: { children?: React.ReactNode }) => (
+    <p className="text-sm leading-relaxed mb-2 last:mb-0">{children}</p>
+  ),
+  ul: ({ children }: { children?: React.ReactNode }) => (
+    <ul className="list-disc list-inside mb-2 space-y-1 text-sm">{children}</ul>
+  ),
+  ol: ({ children }: { children?: React.ReactNode }) => (
+    <ol className="list-decimal list-inside mb-2 space-y-1 text-sm">{children}</ol>
+  ),
+  li: ({ children }: { children?: React.ReactNode }) => (
+    <li className="text-sm">{children}</li>
+  ),
+  strong: ({ children }: { children?: React.ReactNode }) => (
+    <strong className="font-bold">{children}</strong>
+  ),
+  em: ({ children }: { children?: React.ReactNode }) => (
+    <em className="italic">{children}</em>
+  ),
+  code: ({ children, className }: { children?: React.ReactNode; className?: string }) => {
+    // Check if this is an inline code or code block
+    const isInline = !className;
+    if (isInline) {
+      return (
+        <code className="bg-slate-100 dark:bg-slate-700 px-1 py-0.5 rounded text-xs font-mono">
+          {children}
+        </code>
+      );
+    }
+    return (
+      <code className={`block bg-slate-100 dark:bg-slate-700 p-2 rounded text-xs font-mono overflow-x-auto mb-2 ${className}`}>
+        {children}
+      </code>
+    );
+  },
+  pre: ({ children }: { children?: React.ReactNode }) => (
+    <pre className="bg-slate-100 dark:bg-slate-700 p-2 rounded text-xs font-mono overflow-x-auto mb-2">
+      {children}
+    </pre>
+  ),
+  blockquote: ({ children }: { children?: React.ReactNode }) => (
+    <blockquote className="border-l-2 border-slate-300 dark:border-slate-600 pl-3 italic text-sm my-2">
+      {children}
+    </blockquote>
+  ),
+  h1: ({ children }: { children?: React.ReactNode }) => (
+    <h1 className="text-base font-bold mt-3 mb-1">{children}</h1>
+  ),
+  h2: ({ children }: { children?: React.ReactNode }) => (
+    <h2 className="text-sm font-bold mt-2 mb-1">{children}</h2>
+  ),
+  h3: ({ children }: { children?: React.ReactNode }) => (
+    <h3 className="text-sm font-semibold mt-2 mb-1">{children}</h3>
+  ),
+  a: ({ href, children }: { href?: string; children?: React.ReactNode }) => (
+    <a href={href} className="text-indigo-600 dark:text-indigo-400 underline" target="_blank" rel="noopener noreferrer">
+      {children}
+    </a>
+  ),
+};
 
 interface ChatMessage {
   id: string;
@@ -310,7 +376,19 @@ ${paperContent.pageText?.slice(0, 2000) || 'No text available'}`;
                       : 'bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200'
                   }`}
                 >
-                  <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+                  {message.role === 'user' ? (
+                    <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+                  ) : (
+                    <div className="prose prose-sm dark:prose-invert max-w-none">
+                      <ReactMarkdown
+                        remarkPlugins={[remarkMath]}
+                        rehypePlugins={[rehypeKatex]}
+                        components={chatMarkdownComponents}
+                      >
+                        {message.content}
+                      </ReactMarkdown>
+                    </div>
+                  )}
                 </div>
               </div>
             ))}
